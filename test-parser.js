@@ -148,7 +148,14 @@ window.migrateMixSpecs = function(mix, mixData, user) {
         merged.push(test === 'retraction' ? emptyShrinkSpec(def.id) : emptyMechSpec(def.id, def.age));
       }
     }
-    for (const leftover of byId.values()) merged.push(leftover);
+    // Solo preservar probetas extra (no declaradas) que tengan datos reales.
+    // Las originales vacías se descartan (ej. M45 con layout viejo A–F).
+    for (const leftover of byId.values()) {
+      const hasData = test === 'retraction'
+        ? (leftover.values && Object.values(leftover.values).some(v => Array.isArray(v) ? v.some(x => x !== '' && x != null) : (v !== '' && v != null)))
+        : (leftover.parsed && leftover.parsed.pmax > 0);
+      if (hasData) merged.push(leftover);
+    }
     out[test] = merged;
   }
   // Si el usuario no tiene flexión, asegurar el array vacío

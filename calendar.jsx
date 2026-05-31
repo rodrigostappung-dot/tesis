@@ -88,6 +88,7 @@ function buildCalendarEvents(state, retractionAges = [0, 1, 7, 28]) {
 }
 
 function CalendarModal({ state, onClose, onSelectMix, T, lang }) {
+  const [castOnly, setCastOnly] = React.useState(false);
   // Determinar rango de semanas: desde la primera fecha de fundido hasta +60 días
   const allCastDates = Object.values(state.mixMeta || {})
     .map(m => m?.castDate)
@@ -136,8 +137,8 @@ function CalendarModal({ state, onClose, onSelectMix, T, lang }) {
 
     // Cast events: verde
     const casts = dayEvents.filter(e => e.type === 'cast');
-    // Shrinkage measurements: azul si hasData, gris si pendiente
-    const shrinks = dayEvents.filter(e => e.type === 'shrink');
+    // Shrinkage measurements: azul si hasData, gris si pendiente (ocultar en modo "solo fundido")
+    const shrinks = castOnly ? [] : dayEvents.filter(e => e.type === 'shrink');
     const shrinksDone = shrinks.filter(e => e.hasData);
     const shrinksPending = shrinks.filter(e => !e.hasData);
 
@@ -182,6 +183,10 @@ function CalendarModal({ state, onClose, onSelectMix, T, lang }) {
             <span className="lg-dot done" /> {T.legendDone || 'Medición'}
             <span className="lg-dot pending" /> {T.legendPending || 'Pendiente'}
             <span className="lg-dot holiday" /> {T.legendHoliday || 'Feriado'}
+            <label style={{display:'flex',alignItems:'center',gap:5,marginLeft:8,cursor:'pointer'}}>
+              <input type="checkbox" checked={castOnly} onChange={(e)=>setCastOnly(e.target.checked)} />
+              {T.castOnly || 'Solo fundidos'}
+            </label>
           </div>
           <button className="cal-close" onClick={onClose}>✕</button>
         </div>

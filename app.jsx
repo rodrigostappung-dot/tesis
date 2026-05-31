@@ -129,7 +129,7 @@ function MiniCurve({ points, pmax, idxPmax }) {
 }
 
 function FactorialPanel({ T, lang, user }) {
-  const factors = ['BR', 'SFD', 'AFD', 'SFL', 'AFL', 'T'];
+  const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
   const design = user.factorialDesign();
   if (!design || design.length === 0 || !design[0].BR) return null;
   return (
@@ -466,7 +466,7 @@ function ShrinkageSection({ specimens, onUpdate, onOpenViewer, user, mix, mixDat
 
 // ----- DETALLE DE MEZCLA -----
 function MixDetail({ mix, design, mixData, mixMeta, onUpdate, onUpdateMeta, onClose, onOpenViewer, user, T }) {
-  const factors = ['BR', 'SFD', 'AFD', 'SFL', 'AFL', 'T'];
+  const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
   const isCenter = user?.centerMix === mix;
   const isStar = user?.id === 'rodrigo' && mix >= 33 && mix <= 44;
   const typeLabel = isCenter ? T.centerN45 : isStar ? T.starPoint : T.factorialPoint;
@@ -620,6 +620,14 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
   const [filterTest, setFilterTest] = useState('all');
   const [filterAge, setFilterAge] = useState('all');
   const [onlyData, setOnlyData] = useState(true);
+  const [paramFilters, setParamFilters] = useState({}); // {BR:'+'|'-'|'0', ...}
+
+  const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
+  const designByRun = useMemo(() => {
+    const m = {};
+    (user.factorialDesign() || []).forEach(d => { m[d.run] = d; });
+    return m;
+  }, [user]);
 
   const items = useMemo(() => {
     const out = [];
@@ -644,6 +652,14 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
     if (filterMix !== 'all' && it.mix !== parseInt(filterMix)) return false;
     if (filterTest !== 'all' && it.test !== filterTest) return false;
     if (filterAge !== 'all' && it.age !== parseInt(filterAge)) return false;
+    // parameter filters
+    const design = designByRun[it.mix];
+    for (const f of factors) {
+      const want = paramFilters[f];
+      if (want && want !== 'all') {
+        if (!design || design[f] !== want) return false;
+      }
+    }
     return true;
   });
 
@@ -687,6 +703,26 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
           {T.onlyWithData || 'Con datos'}
         </label>
       </div>
+      {user.hasFactorial && (designByRun[1]?.BR) && (
+        <div className="vn-params">
+          <span className="vn-params-label">{T.params || 'Parámetros'}:</span>
+          {factors.map(f => (
+            <div key={f} className="vn-param">
+              <span className="vn-param-name">{f}</span>
+              <select value={paramFilters[f] || 'all'}
+                onChange={(e) => setParamFilters(p => ({ ...p, [f]: e.target.value }))}>
+                <option value="all">—</option>
+                <option value="+">+</option>
+                <option value="0">0</option>
+                <option value="-">−</option>
+              </select>
+            </div>
+          ))}
+          {Object.values(paramFilters).some(v => v && v !== 'all') && (
+            <button className="vn-param-clear" onClick={() => setParamFilters({})}>✕ {T.clear || 'Limpiar'}</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -748,15 +784,42 @@ function App() {
       setFbReady(true);
       try {
         const remote = await window.FB.loadAll(user);
+        let base = null;
         if (remote && Object.keys(remote.results).length > 0) {
           for (let i = 1; i <= user.mixCount; i++) {
             if (remote.results[i]) remote.results[i] = window.migrateMixSpecs(i, remote.results[i], user);
           }
-          setState(remote);
-          setFbLastSync(new Date());
-          console.log('[FB] loaded from cloud for', user.id);
+          base = remote;
         } else {
           console.log('[FB] empty cloud for', user.id, '— using local state');
+        }
+        // Aplicar una vez el calendario de fundido (sobreescribe castDate/castMoment)
+        if (user.id === 'rodrigo' && window.CAST_SCHEDULE_RODRIGO) {
+          const flagKey = 'tesis_cast_schedule_' + (window.CAST_SCHEDULE_VERSION || 'v1');
+          if (!localStorage.getItem(flagKey)) {
+            const target = base || stateRef.current;
+            const nextMeta = { ...target.mixMeta };
+            const changed = [];
+            for (const [mixStr, info] of Object.entries(window.CAST_SCHEDULE_RODRIGO)) {
+              const mix = parseInt(mixStr);
+              const cur = nextMeta[mix] || {};
+              if (cur.castDate !== info.date || cur.castMoment !== info.moment) {
+                nextMeta[mix] = { ...cur, castDate: info.date, castMoment: info.moment };
+                changed.push(mix);
+              }
+            }
+            base = { ...(target), mixMeta: nextMeta };
+            localStorage.setItem(flagKey, '1');
+            if (changed.length) {
+              setDirty(prev => { const n = new Set(prev); changed.forEach(m => n.add(m)); return n; });
+              console.log('[cast schedule] applied to', changed.length, 'mixes');
+            }
+          }
+        }
+        if (base) {
+          setState(base);
+          setFbLastSync(new Date());
+          console.log('[FB] loaded from cloud for', user.id);
         }
       } catch (e) {
         console.error('[FB] load error', e);
@@ -775,8 +838,34 @@ function App() {
     markDirty(mix);
   };
 
+  // ---- Auto-guardado en Firebase (debounce) ----
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
+  const autosaveTimer = useRef(null);
+  useEffect(() => {
+    if (!fbReady || !user || dirty.size === 0) return;
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(async () => {
+      const toSave = [...dirty];
+      setSaving(true);
+      try {
+        await window.FB.saveMany(toSave, stateRef.current, user);
+        setDirty(prev => {
+          const next = new Set(prev);
+          toSave.forEach(m => next.delete(m));
+          return next;
+        });
+        setFbLastSync(new Date());
+      } catch (e) {
+        console.error('[FB] autosave error', e);
+      }
+      setSaving(false);
+    }, 1200);
+    return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current); };
+  }, [dirty, fbReady, user]);
+
   const saveToCloud = async () => {
-    if (!fbReady) { alert('Firebase no está listo'); return; }
+    if (!fbReady) { return; }
     if (!user) return;
     setSaving(true);
     try {
@@ -785,7 +874,6 @@ function App() {
       setDirty(new Set());
       setFbLastSync(new Date());
     } catch (e) {
-      alert('Error al guardar: ' + e.message);
       console.error(e);
     }
     setSaving(false);
@@ -828,12 +916,11 @@ function App() {
           <div className="save-cluster">
             <div className="fb-status">
               <span className={'fb-dot' + (fbReady ? ' ready' : '')}></span>
-              {fbReady ? (fbLastSync ? `↗ ${fbLastSync.toLocaleTimeString()}` : 'conectado') : 'conectando…'}
+              {!fbReady ? 'conectando…'
+                : saving ? '⟳ Guardando…'
+                : dirty.size > 0 ? `✎ ${dirty.size} sin guardar`
+                : fbLastSync ? `✓ Guardado ${fbLastSync.toLocaleTimeString()}` : 'Conectado'}
             </div>
-            <button className={'save-btn' + (dirty.size > 0 ? ' dirty' : '')}
-                    onClick={saveToCloud} disabled={saving || !fbReady}>
-              {saving ? '⟳ Guardando…' : dirty.size > 0 ? `💾 Guardar (${dirty.size})` : '💾 Guardado'}
-            </button>
           </div>
           <div className="lang-picker">
             {['es', 'en', 'it'].map(l => (
