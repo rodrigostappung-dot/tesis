@@ -145,7 +145,7 @@ function CurvePlot({
   const niceTicks = (mn, mx, count = 5) => {
     const range = mx - mn;
     const step0 = range / count;
-    const mag = Math.pow(, Math.floor(Math.log(step0)));
+    const mag = Math.pow(10, Math.floor(Math.log10(step0)));
     const norm = step0 / mag;
     const niceStep = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
     const start = Math.ceil(mn / niceStep) * niceStep;
