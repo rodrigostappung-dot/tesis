@@ -145,7 +145,7 @@ function CurvePlot({
   const niceTicks = (mn, mx, count = 5) => {
     const range = mx - mn;
     const step0 = range / count;
-    const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+    const mag = Math.pow(, Math.floor(Math.log(step0)));
     const norm = step0 / mag;
     const niceStep = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
     const start = Math.ceil(mn / niceStep) * niceStep;
@@ -506,7 +506,7 @@ function ComparatorView({ state, T, lang }) {
         else if (it.kind === 'mechAvg') key = `${it.mix}_${it.testKey}_avg_${it.age}`;
         else key = `${it.mix}_${it.testKey}_${it.specimenId}`;
         if (existingKeys.has(key)) continue;
-        if (prev.length + toAdd.length >= 10) break;
+        if (prev.length + toAdd.length >= 100) break;
         existingKeys.add(key);
         toAdd.push({ key, ...it });
       }
@@ -693,7 +693,7 @@ function ComparatorView({ state, T, lang }) {
           <label style={{display:'none'}}>
             <input type="checkbox" />
           </label>
-          <button className="vt-btn" onClick={() => setPicker(true)} disabled={selected.length >= 10}>
+          <button className="vt-btn" onClick={() => setPicker(true)} disabled={selected.length >= 100}>
             + {T.addCurve || 'Añadir curva'}
           </button>
           <button className="vt-btn" onClick={exportPNG} disabled={!series.length}>PNG</button>
