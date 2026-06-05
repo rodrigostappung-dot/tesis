@@ -101,7 +101,7 @@ window.shrinkageMixSeries = function(retractionSpecs, ages = [0, 1, 7, 28]) {
   return pts;
 };
 
-// ---------- Curve plot component (SVG, supports zoom/pan, hover, click) ----------
+// ---------- Curve plot component (SVG, zoom rectangle, click) ----------
 function CurvePlot({
   points, xKey = 'disp', yKey = 'load',
   width = 760, height = 420,
@@ -113,9 +113,25 @@ function CurvePlot({
   showAxes = true,
   invertY = false,
   series = null,
+  onZoom = null,   // called with {xMin,xMax,yMin,yMax} or null to reset
 }) {
   const W = width, H = height;
   const padL = 60, padR = 16, padT = 16, padB = 44;
+
+  // Drag-to-zoom state (only in series/comparator mode when onZoom is provided)
+  const [drag, setDrag] = React.useState(null); // {x0,y0,x1,y1} in SVG coords
+  const svgRef = React.useRef(null);
+
+  const svgCoords = (e) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * W,
+      y: ((e.clientY - rect.top) / rect.height) * H,
+    };
+  };
+
+  const canZoom = !!onZoom;
 
   // Si hay series múltiples (modo comparador), unir todos para autoscale
   const allPoints = series ? series.flatMap(s => s.points) : points;
@@ -156,6 +172,35 @@ function CurvePlot({
   const xTicks = niceTicks(xMin, xMax);
   const yTicks = niceTicks(yMin, yMax);
 
+  const handleMouseDown = (e) => {
+    if (!canZoom) { handleClick(e); return; }
+    const c = svgCoords(e);
+    setDrag({ x0: c.x, y0: c.y, x1: c.x, y1: c.y });
+    e.preventDefault();
+  };
+  const handleMouseMove = (e) => {
+    if (!drag) return;
+    const c = svgCoords(e);
+    setDrag(d => ({ ...d, x1: c.x, y1: c.y }));
+  };
+  const handleMouseUp = (e) => {
+    if (!drag) return;
+    const dx = Math.abs(drag.x1 - drag.x0), dy = Math.abs(drag.y1 - drag.y0);
+    if (dx > 10 && dy > 10) {
+      // Convert SVG coords back to data coords
+      const toDataX = (px) => xMin + ((px - padL) / (W - padL - padR)) * (xMax - xMin);
+      const toDataY = invertY
+        ? (py) => yMin + ((py - padT) / (H - padT - padB)) * (yMax - yMin)
+        : (py) => yMax - ((py - padT) / (H - padT - padB)) * (yMax - yMin);
+      const rxMin = toDataX(Math.min(drag.x0, drag.x1));
+      const rxMax = toDataX(Math.max(drag.x0, drag.x1));
+      const ryMin = toDataY(Math.max(drag.y0, drag.y1));
+      const ryMax = toDataY(Math.min(drag.y0, drag.y1));
+      onZoom({ xMin: rxMin, xMax: rxMax, yMin: ryMin, yMax: ryMax });
+    }
+    setDrag(null);
+  };
+
   const handleClick = (e) => {
     if (!onClickPoint || !points) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -171,9 +216,12 @@ function CurvePlot({
   };
 
   return (
-    <svg width={W} height={H} className="curve-plot"
-         style={{ cursor: onClickPoint ? 'crosshair' : 'default', background: '#fcfcfd' }}
-         onClick={handleClick}>
+    <svg ref={svgRef} width={W} height={H} className="curve-plot"
+         style={{ cursor: canZoom ? (drag ? 'crosshair' : 'zoom-in') : (onClickPoint ? 'crosshair' : 'default'), background: '#fcfcfd', userSelect: 'none' }}
+         onMouseDown={handleMouseDown}
+         onMouseMove={handleMouseMove}
+         onMouseUp={handleMouseUp}
+         onMouseLeave={() => setDrag(null)}>
       {/* Grid */}
       {showAxes && (
         <>
@@ -229,6 +277,14 @@ function CurvePlot({
         <g>
           <line x1={sx(0)} y1={padT} x2={sx(0)} y2={H - padB} stroke="#888" strokeDasharray="3,3" />
         </g>
+      )}
+      {/* Zoom selection rectangle */}
+      {drag && (
+        <rect
+          x={Math.min(drag.x0, drag.x1)} y={Math.min(drag.y0, drag.y1)}
+          width={Math.abs(drag.x1 - drag.x0)} height={Math.abs(drag.y1 - drag.y0)}
+          fill="rgba(26,79,139,.10)" stroke="var(--accent, #1a4f8b)" strokeWidth="1.5"
+          strokeDasharray="4,2" pointerEvents="none" />
       )}
     </svg>
   );
@@ -485,11 +541,13 @@ function ComparatorView({ state, T, lang }) {
     try { return JSON.parse(localStorage.getItem('tesis_compare_v1') || '[]'); } catch { return []; }
   });
   const [unitMode, setUnitMode] = React.useState('kN');
-  const [shrinkUnit, setShrinkUnit] = React.useState('um'); // 'um' | 'percent'
+  const [shrinkUnit, setShrinkUnit] = React.useState('um');
   const [picker, setPicker] = React.useState(false);
-  const [visibleMap, setVisibleMap] = React.useState({}); // key -> bool
+  const [visibleMap, setVisibleMap] = React.useState({});
   const [colorMap, setColorMap] = React.useState({});
   const [nameMap, setNameMap] = React.useState({});
+  const [rawModeMap, setRawModeMap] = React.useState({}); // key -> true = show raw (no trim)
+  const [zoomViewBox, setZoomViewBox] = React.useState(null); // {xMin,xMax,yMin,yMax} or null
 
   React.useEffect(() => {
     localStorage.setItem('tesis_compare_v1', JSON.stringify(selected));
@@ -621,7 +679,8 @@ function ComparatorView({ state, T, lang }) {
     // mech
     const spec = state.results[s.mix]?.[s.testKey]?.find(x => x.id === s.specimenId);
     if (!spec || !spec.parsed) return null;
-    const trimmed = (spec.trimIdx || spec.trimEndIdx != null)
+    const showRaw = rawModeMap[s.key];
+    const trimmed = (!showRaw && (spec.trimIdx || spec.trimEndIdx != null))
       ? window.applyTrim(spec.parsed, spec.trimIdx, spec.trimEndIdx)
       : spec.parsed;
     let pts = trimmed.points;
@@ -703,6 +762,12 @@ function ComparatorView({ state, T, lang }) {
 
       <div className="comp-layout">
         <div className="compare-plot-wrap">
+          {zoomViewBox && (
+            <div className="zoom-reset-bar">
+              <span>Zoom activo</span>
+              <button className="vt-btn" onClick={() => setZoomViewBox(null)}>↺ Reset zoom</button>
+            </div>
+          )}
           <CurvePlot
             series={series}
             xLabel={hasShrink && !hasMech ? (T.timeDays || 'Tiempo (días)') : (T.disp || 'Desplazamiento (mm)')}
@@ -712,6 +777,8 @@ function ComparatorView({ state, T, lang }) {
             width={900} height={520}
             invertY={hasShrink && !hasMech}
             highlightPmax={false} highlightFirstPeak={false}
+            viewBox={zoomViewBox}
+            onZoom={(box) => setZoomViewBox(box)}
           />
           {mixedMode && (
             <div className="viewer-hint" style={{margin: 8}}>
@@ -757,11 +824,22 @@ function ComparatorView({ state, T, lang }) {
               statsLine = `Pmax: ${trimmed?.pmax?.toFixed(2) || '—'} kN · σmax: ${trimmed?.smax?.toFixed(1) || '—'} MPa · ${spec?.age}d`;
             }
             const name = nameMap[s.key] || defaultName;
+            const isMech = s.kind === 'mech';
+            const showRaw = rawModeMap[s.key];
             return (
-              <div key={s.key} className="legend-row">
+              <div key={s.key} className="legend-row" style={{gridTemplateColumns: '20px 26px 1fr auto auto auto'}}>
                 <input type="checkbox" checked={visible} onChange={(e) => setVisibleMap(m => ({ ...m, [s.key]: e.target.checked }))} />
                 <input type="color" value={color} onChange={(e) => setColorMap(m => ({ ...m, [s.key]: e.target.value }))} />
                 <input className="leg-name" value={name} onChange={(e) => setNameMap(m => ({ ...m, [s.key]: e.target.value }))} />
+                {isMech && (
+                  <button
+                    className={'vt-btn' + (showRaw ? ' active' : '')}
+                    style={{fontSize: 9, padding: '1px 5px'}}
+                    title={showRaw ? 'Mostrando datos crudos' : 'Mostrando datos recortados'}
+                    onClick={() => setRawModeMap(m => ({ ...m, [s.key]: !m[s.key] }))}>
+                    {showRaw ? 'RAW' : 'TRIM'}
+                  </button>
+                )}
                 <span className="leg-stats">{statsLine}</span>
                 <button className="leg-x" onClick={() => removeItem(s.key)}>✕</button>
               </div>
@@ -842,9 +920,19 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
 
   const [text, setText] = React.useState('');
   const [filterMix, setFilterMix] = React.useState('all');
-  const [filterTest, setFilterTest] = React.useState('all'); // all / retraction / flexion / compression
+  const [filterTest, setFilterTest] = React.useState('all');
   const [filterAge, setFilterAge] = React.useState('all');
   const [picked, setPicked] = React.useState(new Set());
+  const [paramFilters, setParamFilters] = React.useState({}); // {BR:'+'|'-'|'0',...}
+
+  // Build factorial design lookup
+  const designByRun = React.useMemo(() => {
+    const m = {};
+    (window.FACTORIAL_DESIGN || []).forEach(d => { m[d.run] = d; });
+    return m;
+  }, []);
+  const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
+  const hasParamFilters = Object.values(paramFilters).some(v => v && v !== 'all');
 
   const allMixes = [...new Set(items.map(i => i.mix))].sort((a, b) => a - b);
   const allAges = [...new Set(items.map(i => i.age))].sort((a, b) => a - b);
@@ -856,6 +944,17 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
       if (filterTest !== 'retraction' && it.testKey !== filterTest) return false;
     }
     if (filterAge !== 'all' && it.age !== parseInt(filterAge)) return false;
+    // param filters (only meaningful for factorial mixes)
+    if (hasParamFilters) {
+      const d = designByRun[it.mix];
+      for (const f of factors) {
+        const want = paramFilters[f];
+        if (want && want !== 'all') {
+          // Map AMF/FVF back to data keys (FACTORIAL_DESIGN uses AMF/FVF now)
+          if (!d || d[f] !== want) return false;
+        }
+      }
+    }
     if (text) {
       const s = `N${it.mix} ${it.testKey} ${it.specimenId} ${it.age}d`.toLowerCase();
       if (!s.includes(text.toLowerCase())) return false;
@@ -935,6 +1034,24 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
             <option value="all">{T.allAges || 'Todas las edades'}</option>
             {allAges.map(a => <option key={a} value={a}>{a}{T.day || 'd'}</option>)}
           </select>
+        </div>
+        <div className="picker-params">
+          {factors.map(f => (
+            <div key={f} className="picker-param">
+              <span>{f}</span>
+              <select value={paramFilters[f] || 'all'}
+                onChange={(e) => setParamFilters(p => ({ ...p, [f]: e.target.value }))}>
+                <option value="all">—</option>
+                <option value="+">+</option>
+                <option value="0">0</option>
+                <option value="-">−</option>
+              </select>
+            </div>
+          ))}
+          {hasParamFilters && (
+            <button className="vt-btn" style={{fontSize:10, padding:'2px 8px'}}
+              onClick={() => setParamFilters({})}>✕ Limpiar</button>
+          )}
         </div>
         <div className="picker-list">
           {filtered.length === 0 && <div className="hint-empty">{T.noCurves || 'No hay ensayos.'}</div>}
