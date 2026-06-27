@@ -1,0 +1,1349 @@
+// ===== VISUALIZADOR + COMPARADOR =====
+// El visualizador permite:
+//   - Mostrar la curva completa de un ensayo
+//   - Recortar el origen: clickear un punto y desplazar t/load/disp/stress/strain a 0 ahí
+//   - Marcar "first peak" manualmente con click
+//   - Toggle kN ↔ MPa (recalcula stress según test y dimensiones)
+//   - Botón "Reset" para volver al original
+//
+// Los cambios (trimIdx, firstPeakIdx) se guardan en la propia probeta.
+// El comparador toma N ensayos en una lista y los grafica juntos con
+// la trim/firstPeak aplicada de cada uno.
+
+const PALETTE = [
+  '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+];
+
+// Genera un path SVG suavizado (Catmull-Rom -> Bézier cúbica) a partir de
+// puntos ya en coordenadas de pantalla [{x,y}]. Para curvas con pocos puntos
+// (ej. retracción: 0/1/7/28 días) las muestra como curva en vez de rectas.
+function smoothScreenPath(sp) {
+  if (sp.length < 3) return sp.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  let d = `M${sp[0].x},${sp[0].y}`;
+  for (let i = 0; i < sp.length - 1; i++) {
+    const p0 = sp[i - 1] || sp[i], p1 = sp[i], p2 = sp[i + 1], p3 = sp[i + 2] || sp[i + 1];
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x},${p2.y}`;
+  }
+  return d;
+}
+
+// Aplica recorte: devuelve {points: [...]} con valores desplazados al origen del trimIdx
+// y opcionalmente truncados en trimEndIdx (inclusive).
+window.applyTrim = function(parsed, trimIdx, trimEndIdx) {
+  if (!parsed || !parsed.points || !parsed.points.length) return parsed;
+  const start = trimIdx && trimIdx > 0 ? trimIdx : 0;
+  const end = trimEndIdx != null && trimEndIdx > start ? Math.min(trimEndIdx + 1, parsed.points.length) : parsed.points.length;
+  if (start === 0 && end === parsed.points.length) return parsed;
+  const t0 = parsed.points[start];
+  if (!t0) return parsed;
+  const pts = parsed.points.slice(start, end).map(p => ({
+    t: p.t - t0.t,
+    load: p.load - t0.load,
+    disp: p.disp - t0.disp,
+    stress: (p.stress || 0) - (t0.stress || 0),
+    strain: (p.strain || 0) - (t0.strain || 0),
+    elong: (p.elong || 0) - (t0.elong || 0),
+  }));
+  let pmax = 0, smax = 0, idxPmax = 0;
+  pts.forEach((p, i) => {
+    if (p.load > pmax) { pmax = p.load; idxPmax = i; }
+    if (p.stress > smax) smax = p.stress;
+  });
+  return { ...parsed, points: pts, pmax, smax, idxPmax, nPoints: pts.length };
+};
+
+// Calcula tensión en MPa para flexión / compresión usando dimensiones de la probeta.
+// length=lado1 (largo), height=lado2, width=lado3
+// Flexión: σ = 3·P·L / (2·b·d²), P en N, dim mm, L=100mm (10cm), b=height, d=length
+// Compresión: σ = P / (height·width), área en mm²
+window.computeStressMPa = function(loadKN, testKey, dims) {
+  const L = 100; // mm
+  const len = parseFloat(dims.length);
+  const hei = parseFloat(dims.height);
+  const wid = parseFloat(dims.width);
+  const P = loadKN * 1000; // N
+  if (testKey === 'compression') {
+    if (!hei || !wid) return null;
+    return P / (hei * wid);
+  }
+  if (testKey === 'flexion') {
+    if (!hei || !len) return null;
+    return (3 * P * L) / (2 * hei * len * len);
+  }
+  return null;
+};
+
+// ----- RETRACCIÓN: serie tiempo (días) vs cambio (μm/m) -----
+// Día 0 = base. Para cada edad t, change(t) = mean(values[t]) - mean(values[0]).
+// Si una probeta no tiene día 0 cargado, no se puede normalizar — devolvemos null.
+window.shrinkageSeries = function(specimen, ages = [0, 1, 7, 28]) {
+  const meanOf = (arr) => {
+    if (!Array.isArray(arr)) arr = [arr];
+    const v = arr.map(x => parseFloat(x)).filter(x => !isNaN(x));
+    if (!v.length) return null;
+    return v.reduce((a, b) => a + b, 0) / v.length;
+  };
+  const base = meanOf(specimen.values?.[0]);
+  if (base == null) return null;
+  const pts = [];
+  for (const t of ages) {
+    const m = meanOf(specimen.values?.[t]);
+    if (m == null) continue;
+    pts.push({ t, change: m - base, raw: m });
+  }
+  return { base, points: pts };
+};
+
+// Promedio de las dos probetas A y B para una mezcla (cambio vs tiempo)
+window.shrinkageMixSeries = function(retractionSpecs, ages = [0, 1, 7, 28]) {
+  // Para cada edad, promediar el "cambio" entre las probetas que tengan día 0 + ese día t
+  const pts = [];
+  for (const t of ages) {
+    const changes = [];
+    for (const spec of retractionSpecs) {
+      const s = window.shrinkageSeries(spec, [0, t]);
+      if (!s) continue;
+      const found = s.points.find(p => p.t === t);
+      if (found) changes.push(found.change);
+    }
+    if (changes.length === 0) continue;
+    const avg = changes.reduce((a, b) => a + b, 0) / changes.length;
+    pts.push({ t, change: avg, n: changes.length });
+  }
+  return pts;
+};
+
+// ---------- Curve plot component (SVG, zoom rectangle, click) ----------
+function CurvePlot({
+  points, xKey = 'disp', yKey = 'load',
+  width = 760, height = 420,
+  pmaxIdx = null, firstPeakIdx = null, trimIdx = null,
+  onClickPoint = null, onHover = null,
+  highlightPmax = true, highlightFirstPeak = true,
+  xLabel = 'Desplazamiento (mm)', yLabel = 'Carga (kN)',
+  color = '#1a4f8b', viewBox = null,
+  showAxes = true,
+  invertY = false,
+  series = null,
+  ghostPoints = null,   // curva fantasma (sketch) dibujada en tono claro detrás
+  onZoom = null,   // called with {xMin,xMax,yMin,yMax} or null to reset
+}) {
+  const W = width, H = height;
+  const padL = 60, padR = 16, padT = 16, padB = 44;
+
+  // Drag-to-zoom state (only in series/comparator mode when onZoom is provided)
+  const [drag, setDrag] = React.useState(null); // {x0,y0,x1,y1} in SVG coords
+  const [hover, setHover] = React.useState(null); // {x,y,label,color}
+  const svgRef = React.useRef(null);
+
+  const svgCoords = (e) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * W,
+      y: ((e.clientY - rect.top) / rect.height) * H,
+    };
+  };
+
+  const canZoom = !!onZoom;
+
+  // Si hay series múltiples (modo comparador), unir todos para autoscale
+  const allPoints = series ? series.flatMap(s => s.points) : (ghostPoints ? [...points, ...ghostPoints] : points);
+  if (!allPoints || !allPoints.length) {
+    return <svg width={W} height={H}><text x="50%" y="50%" textAnchor="middle" fill="#999">Sin datos</text></svg>;
+  }
+
+  const xs = allPoints.map(p => p[xKey]);
+  const ys = allPoints.map(p => p[yKey]);
+  let xMin = viewBox ? viewBox.xMin : Math.min(...xs, 0);
+  let xMax = viewBox ? viewBox.xMax : Math.max(...xs);
+  let yMin = viewBox ? viewBox.yMin : Math.min(...ys, 0);
+  let yMax = viewBox ? viewBox.yMax : Math.max(...ys);
+  // padding
+  if (!viewBox) {
+    const xR = xMax - xMin || 1, yR = yMax - yMin || 1;
+    xMax += xR * 0.02; yMax += yR * 0.05;
+  }
+  const sx = (x) => padL + ((x - xMin) / (xMax - xMin || 1)) * (W - padL - padR);
+  const sy = invertY
+    ? (y) => padT + ((y - yMin) / (yMax - yMin || 1)) * (H - padT - padB)
+    : (y) => H - padB - ((y - yMin) / (yMax - yMin || 1)) * (H - padT - padB);
+
+  const buildPath = (pts, smooth) => {
+    const sp = pts.map(p => ({ x: +sx(p[xKey]).toFixed(1), y: +sy(p[yKey]).toFixed(1) }));
+    if (smooth && sp.length >= 3) return smoothScreenPath(sp);
+    return sp.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  };
+
+  // Ticks
+  const niceTicks = (mn, mx, count = 5) => {
+    const range = mx - mn;
+    const step0 = range / count;
+    const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+    const norm = step0 / mag;
+    const niceStep = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+    const start = Math.ceil(mn / niceStep) * niceStep;
+    const ticks = [];
+    for (let v = start; v <= mx; v += niceStep) ticks.push(v);
+    return ticks;
+  };
+  const xTicks = niceTicks(xMin, xMax);
+  const yTicks = niceTicks(yMin, yMax);
+
+  const handleMouseDown = (e) => {
+    setHover(null);
+    if (!canZoom) { handleClick(e); return; }
+    const c = svgCoords(e);
+    setDrag({ x0: c.x, y0: c.y, x1: c.x, y1: c.y });
+    e.preventDefault();
+  };
+  const handleMouseMove = (e) => {
+    if (!drag) return;
+    const c = svgCoords(e);
+    setDrag(d => ({ ...d, x1: c.x, y1: c.y }));
+  };
+  const handleMouseUp = (e) => {
+    if (!drag) return;
+    const dx = Math.abs(drag.x1 - drag.x0), dy = Math.abs(drag.y1 - drag.y0);
+    if (dx > 10 && dy > 10) {
+      // Convert SVG coords back to data coords
+      const toDataX = (px) => xMin + ((px - padL) / (W - padL - padR)) * (xMax - xMin);
+      const toDataY = invertY
+        ? (py) => yMin + ((py - padT) / (H - padT - padB)) * (yMax - yMin)
+        : (py) => yMax - ((py - padT) / (H - padT - padB)) * (yMax - yMin);
+      const rxMin = toDataX(Math.min(drag.x0, drag.x1));
+      const rxMax = toDataX(Math.max(drag.x0, drag.x1));
+      const ryMin = toDataY(Math.max(drag.y0, drag.y1));
+      const ryMax = toDataY(Math.min(drag.y0, drag.y1));
+      onZoom({ xMin: rxMin, xMax: rxMax, yMin: ryMin, yMax: ryMax });
+    }
+    setDrag(null);
+  };
+
+  const handleClick = (e) => {
+    if (!onClickPoint || !points) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = ((e.clientX - rect.left) / rect.width) * W;
+    // Find nearest point by X
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const px = sx(points[i][xKey]);
+      const d = Math.abs(px - mx);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    onClickPoint(best, points[best]);
+  };
+
+  return (
+    <svg ref={svgRef} width={W} height={H} className="curve-plot"
+         style={{ cursor: canZoom ? (drag ? 'crosshair' : 'zoom-in') : (onClickPoint ? 'crosshair' : 'default'), background: '#fcfcfd', userSelect: 'none' }}
+         onMouseDown={handleMouseDown}
+         onMouseMove={handleMouseMove}
+         onMouseUp={handleMouseUp}
+         onMouseLeave={() => setDrag(null)}>
+      {/* Grid */}
+      {showAxes && (
+        <>
+          {xTicks.map(t => (
+            <line key={'gx' + t} x1={sx(t)} y1={padT} x2={sx(t)} y2={H - padB}
+                  stroke="#eef0f3" strokeWidth="1" />
+          ))}
+          {yTicks.map(t => (
+            <line key={'gy' + t} x1={padL} y1={sy(t)} x2={W - padR} y2={sy(t)}
+                  stroke="#eef0f3" strokeWidth="1" />
+          ))}
+        </>
+      )}
+      {/* Axes */}
+      <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} stroke="#666" strokeWidth="1" />
+      <line x1={padL} y1={padT} x2={padL} y2={H - padB} stroke="#666" strokeWidth="1" />
+      {/* Tick labels */}
+      {showAxes && xTicks.map(t => (
+        <text key={'lx' + t} x={sx(t)} y={H - padB + 16} textAnchor="middle" fontSize="11" fill="#555" fontFamily="ui-monospace, monospace">{t.toFixed(2)}</text>
+      ))}
+      {showAxes && yTicks.map(t => (
+        <text key={'ly' + t} x={padL - 8} y={sy(t) + 4} textAnchor="end" fontSize="11" fill="#555" fontFamily="ui-monospace, monospace">{t.toFixed(2)}</text>
+      ))}
+      {/* Axis labels */}
+      <text x={(W + padL) / 2} y={H - 8} textAnchor="middle" fontSize="12" fill="#333">{xLabel}</text>
+      <text x={16} y={(H - padB + padT) / 2} textAnchor="middle" fontSize="12" fill="#333"
+            transform={`rotate(-90 16 ${(H - padB + padT) / 2})`}>{yLabel}</text>
+
+      {/* Data */}
+      {series ? series.map((s, i) => (
+        <path key={i} d={buildPath(s.points, s.smooth)} fill="none"
+              stroke={s.color}
+              strokeOpacity={s.kind === 'ghost' ? 0.3 : 1}
+              strokeWidth={s.kind === 'ghost' ? 2.4 : (s.kind === 'avg' || s.kind === 'mechAvg' || s.kind === 'shrinkMix' ? 2.6 : 1.6)}
+              strokeLinecap={s.kind === 'ghost' ? 'round' : undefined}
+              pointerEvents={s.kind === 'ghost' ? 'none' : undefined}
+              strokeDasharray={s.kind === 'ghost' ? '1,5' : (s.dash != null ? (s.dash === 'none' ? undefined : s.dash) : (s.kind === 'avg' ? '6,3' : (s.kind === 'mechAvg' || s.kind === 'shrinkMix' ? '4,2' : undefined)))} />
+      )) : (
+        <React.Fragment>
+          {ghostPoints && ghostPoints.length > 1 && (
+            <path d={buildPath(ghostPoints)} fill="none" stroke={color}
+                  strokeWidth="2.4" strokeOpacity="0.3" strokeLinecap="round"
+                  strokeLinejoin="round" strokeDasharray="1,5" pointerEvents="none" />
+          )}
+          <path d={buildPath(points)} fill="none" stroke={color} strokeWidth="1.6" />
+        </React.Fragment>
+      )}
+
+      {/* Hit areas invisibles para mostrar el nombre al pasar el mouse */}
+      {series && series.map((s, i) => (
+        s.kind === 'ghost' ? null : (
+        <path key={'hit' + i} d={buildPath(s.points, s.smooth)} fill="none"
+              stroke="transparent" strokeWidth="14" pointerEvents="stroke"
+              onMouseMove={(e) => { if (drag) return; const c = svgCoords(e); setHover({ x: c.x, y: c.y, label: s.label || ('Serie ' + (i + 1)), color: s.color }); }}
+              onMouseLeave={() => setHover(null)} />
+        )
+      ))}
+
+      {/* Markers */}
+      {!series && highlightPmax && pmaxIdx != null && points[pmaxIdx] && (
+        <g>
+          <circle cx={sx(points[pmaxIdx][xKey])} cy={sy(points[pmaxIdx][yKey])} r="5" fill="#d62728" />
+          <text x={sx(points[pmaxIdx][xKey]) + 8} y={sy(points[pmaxIdx][yKey]) - 6} fontSize="11" fill="#d62728" fontWeight="600">P max</text>
+        </g>
+      )}
+      {!series && highlightFirstPeak && firstPeakIdx != null && points[firstPeakIdx] && (
+        <g>
+          <circle cx={sx(points[firstPeakIdx][xKey])} cy={sy(points[firstPeakIdx][yKey])} r="5" fill="#2ca02c" />
+          <text x={sx(points[firstPeakIdx][xKey]) + 8} y={sy(points[firstPeakIdx][yKey]) - 6} fontSize="11" fill="#2ca02c" fontWeight="600">1st peak</text>
+        </g>
+      )}
+      {!series && trimIdx != null && trimIdx > 0 && points[0] && (
+        <g>
+          <line x1={sx(0)} y1={padT} x2={sx(0)} y2={H - padB} stroke="#888" strokeDasharray="3,3" />
+        </g>
+      )}
+      {/* Zoom selection rectangle */}
+      {drag && (
+        <rect
+          x={Math.min(drag.x0, drag.x1)} y={Math.min(drag.y0, drag.y1)}
+          width={Math.abs(drag.x1 - drag.x0)} height={Math.abs(drag.y1 - drag.y0)}
+          fill="rgba(26,79,139,.10)" stroke="var(--accent, #1a4f8b)" strokeWidth="1.5"
+          strokeDasharray="4,2" pointerEvents="none" />
+      )}
+      {/* Tooltip con el nombre de la curva */}
+      {hover && !drag && (() => {
+        const tw = hover.label.length * 6.6 + 28;
+        const flip = hover.x + 12 + tw > W;
+        const bx = flip ? hover.x - 12 - tw : hover.x + 12;
+        const by = Math.max(padT + 2, hover.y - 26);
+        return (
+          <g pointerEvents="none">
+            <rect x={bx} y={by} width={tw} height={20} rx={4} fill="rgba(20,25,35,.92)" />
+            <circle cx={bx + 11} cy={by + 10} r={4} fill={hover.color} />
+            <text x={bx + 20} y={by + 14} fontSize="11" fill="#fff"
+                  fontFamily="ui-monospace, monospace">{hover.label}</text>
+          </g>
+        );
+      })()}
+    </svg>
+  );
+}
+
+// Corrección de curva: dados 2 índices, traza recta por esos puntos, halla disp donde load=0,
+// elimina puntos anteriores al punto 1 y reacomoda para partir desde (0,0).
+window.applyCorrection = function(parsed, corr) {
+  if (!parsed || !parsed.points || !corr || corr.i1 == null || corr.i2 == null) return parsed;
+  const pts = parsed.points;
+  const i1 = Math.min(corr.i1, corr.i2), i2 = Math.max(corr.i1, corr.i2);
+  if (i1 === i2 || !pts[i1] || !pts[i2]) return parsed;
+  const x1 = pts[i1].disp, y1 = pts[i1].load;
+  const x2 = pts[i2].disp, y2 = pts[i2].load;
+  const m = (y2 - y1) / (x2 - x1);
+  if (!isFinite(m) || m === 0) return parsed;
+  const x0 = x1 - y1 / m; // disp donde la recta cruza load = 0
+  const tail = pts.slice(i1).map(p => ({
+    t: p.t, load: p.load, disp: p.disp - x0, stress: (p.stress || 0), strain: (p.strain || 0), elong: (p.elong || 0),
+  }));
+  const origin = { t: tail[0] ? tail[0].t : 0, load: 0, disp: 0, stress: 0, strain: 0, elong: 0 };
+  const corrected = [origin, ...tail];
+  let pmax = 0, smax = 0, idxPmax = 0;
+  corrected.forEach((p, i) => { if (p.load > pmax) { pmax = p.load; idxPmax = i; } if (p.stress > smax) smax = p.stress; });
+  return { ...parsed, points: corrected, pmax, smax, idxPmax, nPoints: corrected.length, _x0: x0, _i1: i1 };
+};
+
+// ---------- Visualizador individual ----------
+function IndividualViewer({ specimen, testKey, onUpdate, onAddToCompare, T }) {
+  const parsed = specimen?.parsed;
+  if (!parsed || !parsed.points || !parsed.points.length) {
+    return <div className="viewer-empty">{T.viewerEmpty || 'Sin datos cargados'}</div>;
+  }
+  const [mode, setMode] = React.useState('view'); // 'view' | 'setTrim' | 'setTrimEnd' | 'setPeak' | 'correct'
+  const [unitMode, setUnitMode] = React.useState('kN');
+  const [correctP1, setCorrectP1] = React.useState(null);
+  const rawMode = mode === 'correct';
+  const allowCorrection = testKey === 'compression'; // la corrección solo aplica a compresión
+
+  // Apply correction (corrige curva), then trim. Solo se corrige en compresión.
+  const corrected = (allowCorrection && specimen.correction)
+    ? window.applyCorrection(parsed, specimen.correction)
+    : parsed;
+  const trimmed = (specimen.trimIdx || specimen.trimEndIdx != null)
+    ? window.applyTrim(corrected, specimen.trimIdx, specimen.trimEndIdx)
+    : corrected;
+
+  // If MPa, recompute stress for each point using dimensions.
+  // En modo corrección mostramos los puntos crudos (sin corrección/trim) en kN.
+  const basePoints = rawMode ? parsed.points : trimmed.points;
+  const displayPoints = React.useMemo(() => {
+    if (rawMode || unitMode === 'kN') return basePoints;
+    return basePoints.map(p => {
+      const mpa = window.computeStressMPa(p.load, testKey, specimen);
+      return { ...p, load: mpa != null ? mpa : 0 };
+    });
+  }, [basePoints, rawMode, unitMode, testKey, specimen.length, specimen.height, specimen.width]);
+
+  // Indices in trimmed array (firstPeakIdx and pmaxIdx might need adjustment if trim was applied)
+  // We store firstPeakIdx relative to the ORIGINAL parsed.points
+  const trimOffset = specimen.trimIdx || 0;
+  const localPmaxIdx = trimmed.idxPmax;
+  const localFirstPeakIdx = specimen.firstPeakIdx != null
+    ? Math.max(0, specimen.firstPeakIdx - trimOffset)
+    : null;
+
+  const handlePlotClick = (i, pt) => {
+    if (mode === 'setTrim') {
+      const absIdx = (specimen.trimIdx || 0) + i;
+      onUpdate({ ...specimen, trimIdx: absIdx });
+      setMode('view');
+    } else if (mode === 'setTrimEnd') {
+      const absIdx = (specimen.trimIdx || 0) + i;
+      onUpdate({ ...specimen, trimEndIdx: absIdx });
+      setMode('view');
+    } else if (mode === 'setPeak') {
+      const absIdx = (specimen.trimIdx || 0) + i;
+      onUpdate({ ...specimen, firstPeakIdx: absIdx });
+      setMode('view');
+    } else if (mode === 'correct') {
+      // i es índice en displayPoints; mapear a índice en parsed (sin corrección ni trim aplicada aún)
+      // En modo correct mostramos la curva cruda, así que i ya es índice de parsed.
+      if (correctP1 == null) {
+        setCorrectP1(i);
+      } else {
+        onUpdate({ ...specimen, correction: { i1: correctP1, i2: i }, trimIdx: null });
+        setCorrectP1(null);
+        setMode('view');
+      }
+    }
+  };
+
+  const reset = () => { setCorrectP1(null); onUpdate({ ...specimen, trimIdx: null, trimEndIdx: null, firstPeakIdx: null, correction: null }); };
+
+  const yLabel = unitMode === 'kN' ? 'Carga P (kN)' : 'Tensión σ (MPa)';
+  const xLabel = 'Desplazamiento (mm)';
+
+  // First-peak value
+  const firstPeakValue = localFirstPeakIdx != null && displayPoints[localFirstPeakIdx]
+    ? displayPoints[localFirstPeakIdx].load
+    : null;
+  const pmaxValue = displayPoints[localPmaxIdx]?.load;
+
+  return (
+    <div className="viewer-individual">
+      <div className="viewer-toolbar">
+        <div className="vt-group">
+          <button className={'vt-btn' + (mode === 'setTrim' ? ' active' : '')}
+                  onClick={() => setMode(mode === 'setTrim' ? 'view' : 'setTrim')}>
+            ✂ {T.setOrigin || 'Fijar inicio'}
+          </button>
+          <button className={'vt-btn' + (mode === 'setTrimEnd' ? ' active' : '')}
+                  onClick={() => setMode(mode === 'setTrimEnd' ? 'view' : 'setTrimEnd')}>
+            ✂▸ {T.setEnd || 'Fijar fin'}
+          </button>
+          <button className={'vt-btn' + (mode === 'setPeak' ? ' active' : '')}
+                  onClick={() => setMode(mode === 'setPeak' ? 'view' : 'setPeak')}>
+            ⬆ {T.setFirstPeak || 'Primer peak'}
+          </button>
+          {allowCorrection && (
+            <button className={'vt-btn' + (mode === 'correct' ? ' active' : '')}
+                    onClick={() => { setCorrectP1(null); setMode(mode === 'correct' ? 'view' : 'correct'); }}>
+              📐 {T.correctCurve || 'Corregir curva'}
+            </button>
+          )}
+          <button className="vt-btn" onClick={reset}
+                  disabled={!specimen.trimIdx && specimen.trimEndIdx == null && specimen.firstPeakIdx == null && !specimen.correction}>
+            ↺ {T.reset || 'Resetear'}
+          </button>
+        </div>
+        <div className="vt-group">
+          <div className="unit-toggle">
+            <button className={unitMode === 'kN' ? 'active' : ''} onClick={() => setUnitMode('kN')}>kN</button>
+            <button className={unitMode === 'MPa' ? 'active' : ''} onClick={() => setUnitMode('MPa')}>MPa</button>
+          </div>
+          {onAddToCompare && (
+            <button className="vt-btn primary" onClick={onAddToCompare}>
+              + {T.addToCompare || 'Comparar'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {mode !== 'view' && (
+        <div className="viewer-hint">
+          {mode === 'setTrim'
+            ? (T.hintTrim || 'Click en el punto que será el nuevo origen (t=0, P=0, disp=0).')
+            : mode === 'setTrimEnd'
+            ? (T.hintTrimEnd || 'Click en el último punto a conservar.')
+            : mode === 'correct'
+            ? (correctP1 == null
+                ? '📐 Corregir: click en el PRIMER punto de la zona lineal.'
+                : '📐 Corregir: click en el SEGUNDO punto. Se trazará una recta hasta carga 0 y se reordenará desde (0,0).')
+            : (T.hintPeak || 'Click en el primer peak de la curva.')}
+        </div>
+      )}
+
+      <CurvePlot
+        points={displayPoints}
+        pmaxIdx={rawMode ? null : localPmaxIdx}
+        firstPeakIdx={rawMode ? correctP1 : localFirstPeakIdx}
+        trimIdx={rawMode ? null : specimen.trimIdx}
+        onClickPoint={handlePlotClick}
+        xLabel={xLabel}
+        yLabel={rawMode ? 'Carga P (kN)' : yLabel}
+      />
+
+      <div className="viewer-stats">
+        <div className="stat-block">
+          <div className="sb-k">P max</div>
+          <div className="sb-v">{pmaxValue != null ? pmaxValue.toFixed(2) : '—'} {unitMode}</div>
+        </div>
+        <div className="stat-block">
+          <div className="sb-k">{T.firstPeak || 'Primer peak'}</div>
+          <div className="sb-v">{firstPeakValue != null ? firstPeakValue.toFixed(2) : '—'} {firstPeakValue != null ? unitMode : ''}</div>
+        </div>
+        <div className="stat-block">
+          <div className="sb-k">{T.points || 'puntos'}</div>
+          <div className="sb-v">{displayPoints.length}</div>
+        </div>
+        <div className="stat-block">
+          <div className="sb-k">{T.trimmed || 'Recorte'}</div>
+          <div className="sb-v" style={{fontSize: 12}}>
+            {specimen.trimIdx ? `↦ ${specimen.trimIdx}` : '—'}
+            {specimen.trimEndIdx != null ? ` ↤ ${specimen.trimEndIdx}` : ''}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Largo inicial de probeta para % retracción
+window.SHRINKAGE_L0_MM = 250;
+
+// Convierte Δ (μm/m o unidad bruta) a % usando L0=250mm. Usuario indicó dividir por 250.
+window.shrinkToPercent = function(delta) {
+  return delta / window.SHRINKAGE_L0_MM;
+};
+
+// ---------- Visualizador de RETRACCIÓN (cambio vs tiempo) ----------
+function ShrinkageViewer({ specimens, mix, T, user, mixData }) {
+  const [unit, setUnit] = React.useState('um'); // 'um' | 'percent'
+  const series = [];
+  const ages = user
+    ? window.getShrinkAgesForMix(user, mixData || { retraction: specimens })
+    : window.SHRINKAGE_AGES;
+
+  const PALETTE_RET = ['#1f77b4', '#ff7f0e', '#9467bd', '#8c564b', '#e377c2', '#bcbd22'];
+  const toUnit = (v) => unit === 'percent' ? window.shrinkToPercent(v) : v;
+
+  specimens.forEach((spec, i) => {
+    const s = window.shrinkageSeries(spec, ages);
+    if (!s) return;
+    series.push({
+      points: s.points.map(p => ({ disp: p.t, load: toUnit(p.change), t: p.t, stress: toUnit(p.change), strain: 0, elong: 0 })),
+      color: PALETTE_RET[i % PALETTE_RET.length],
+      label: `${T.specimen || 'Probeta'} ${spec.id}`,
+      smooth: true,
+    });
+  });
+
+  const avgPts = window.shrinkageMixSeries(specimens, ages);
+  if (avgPts.length > 0) {
+    series.push({
+      points: avgPts.map(p => ({ disp: p.t, load: toUnit(p.change), t: p.t, stress: toUnit(p.change), strain: 0, elong: 0 })),
+      color: '#2ca02c',
+      label: T.avg || 'Promedio',
+      smooth: true,
+    });
+  }
+
+  if (series.length === 0) {
+    return <div className="viewer-empty">{T.shrinkNeedsBase || 'Falta ingresar el día 0 (base) en al menos una probeta.'}</div>;
+  }
+
+  const yLabel = unit === 'percent'
+    ? (T.shrinkChangePct || 'Cambio Δ (%)')
+    : (T.shrinkChange || 'Cambio Δ (μm/m)');
+  const fmt = unit === 'percent' ? (v) => v.toFixed(3) : (v) => v.toFixed(0);
+
+  return (
+    <div className="viewer-individual">
+      <div className="viewer-toolbar">
+        <div className="vt-group">
+          <span style={{fontSize: 11, color: 'var(--text-3)'}}>
+            {T.shrinkBaselineHint || 'Día 0 = base. Curva = lectura − base.'}
+          </span>
+        </div>
+        <div className="vt-group">
+          <div className="unit-toggle">
+            <button className={unit === 'um' ? 'active' : ''} onClick={() => setUnit('um')}>μm/m</button>
+            <button className={unit === 'percent' ? 'active' : ''} onClick={() => setUnit('percent')}>%</button>
+          </div>
+        </div>
+      </div>
+      <CurvePlot
+        series={series}
+        xLabel={T.timeDays || 'Tiempo (días)'}
+        yLabel={yLabel}
+        width={760} height={420}
+        invertY={true}
+        highlightPmax={false} highlightFirstPeak={false}
+      />
+      <div className="comp-legend" style={{maxHeight: 'none', marginTop: 10}}>
+        <div className="legend-title">{T.values || 'Valores'} {unit === 'percent' ? '(%)' : '(μm/m)'}</div>
+        <table className="shrink-table" style={{margin: 0, border: 0}}>
+          <thead>
+            <tr>
+              <th>{T.specimen}</th>
+              {ages.map(a => <th key={a}>{a}{T.day || 'd'}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {specimens.map((spec) => {
+              const s = window.shrinkageSeries(spec, ages);
+              return (
+                <tr key={spec.id}>
+                  <td className="spec-id">{spec.id}</td>
+                  {ages.map(a => {
+                    if (!s) return <td key={a} className="empty">—</td>;
+                    const pt = s.points.find(p => p.t === a);
+                    return <td key={a}>{pt ? fmt(toUnit(pt.change)) : '—'}</td>;
+                  })}
+                </tr>
+              );
+            })}
+            <tr className="avg-row">
+              <td>{T.avg}</td>
+              {ages.map(a => {
+                const pt = avgPts.find(p => p.t === a);
+                return <td key={a} className={pt ? 'has-val' : 'empty'}>{pt ? fmt(toUnit(pt.change)) : '—'}</td>;
+              })}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Comparador ----------
+function ComparatorView({ state, T, lang }) {
+  // Lista de "selecciones" en localStorage temporal
+  const [selected, setSelected] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem('tesis_compare_v1') || '[]'); } catch { return []; }
+  });
+  const [unitMode, setUnitMode] = React.useState('kN');
+  const [shrinkUnit, setShrinkUnit] = React.useState('um');
+  const [picker, setPicker] = React.useState(false);
+  const [visibleMap, setVisibleMap] = React.useState({});
+  const [colorMap, setColorMap] = React.useState({});
+  const [nameMap, setNameMap] = React.useState({});
+  const [rawModeMap, setRawModeMap] = React.useState({}); // key -> true = show raw (no trim)
+  const [zoomViewBox, setZoomViewBox] = React.useState(null); // {xMin,xMax,yMin,yMax} or null
+  const [viewState, setViewState] = React.useState('processed'); // 'pure' | 'processed'
+  const [showGhost, setShowGhost] = React.useState(false);
+  const [axisMode, setAxisMode] = React.useState('auto'); // 'auto' | 'manual'
+  const [manualAxis, setManualAxis] = React.useState({ xMin: 0, xMax: 1, yMin: 0, yMax: 1 });
+  const [colorBy, setColorBy] = React.useState('none'); // factor para codificar color
+  const [lineBy, setLineBy] = React.useState('none');   // factor para codificar estilo de línea
+
+  const COMP_FACTORS = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
+  const LEVEL_COLOR = { '-': '#2166ac', '0': '#7f7f7f', '+': '#b2182b' };
+  const LEVEL_DASH = { '-': 'none', '0': '7,5', '+': '2,4' };
+  const LEVEL_NAME = { '-': (T.low || 'Bajo (−1)'), '0': (T.center || 'Centro (0)'), '+': (T.high || 'Alto (+1)') };
+  const designByRun = React.useMemo(() => {
+    const m = {}; (window.FACTORIAL_DESIGN || []).forEach(d => { m[d.run] = d; });
+    return m;
+  }, []);
+
+  // Procesa una probeta mecánica: corrección (SOLO compresión) + recorte. raw = sin procesar.
+  const processMech = (spec, testKey, raw) => {
+    if (raw) return spec.parsed;
+    let p = spec.parsed;
+    if (testKey === 'compression' && spec.correction) p = window.applyCorrection(p, spec.correction);
+    if (spec.trimIdx || spec.trimEndIdx != null) p = window.applyTrim(p, spec.trimIdx, spec.trimEndIdx);
+    return p;
+  };
+  // Desplazamiento aplicado al inicio por la corrección/recorte (para alinear el boceto crudo).
+  const mechShift = (spec, testKey) => {
+    if (testKey === 'compression' && spec.correction) {
+      const c = window.applyCorrection(spec.parsed, spec.correction);
+      return { dx: c._x0 || 0, dy: 0 };
+    }
+    if (spec.trimIdx && spec.parsed.points[spec.trimIdx]) {
+      return { dx: spec.parsed.points[spec.trimIdx].disp, dy: spec.parsed.points[spec.trimIdx].load };
+    }
+    return { dx: 0, dy: 0 };
+  };
+
+  React.useEffect(() => {
+    localStorage.setItem('tesis_compare_v1', JSON.stringify(selected));
+  }, [selected]);
+
+  const addMany = (items) => {
+    setSelected(prev => {
+      const existingKeys = new Set(prev.map(s => s.key));
+      const toAdd = [];
+      for (const it of items) {
+        let key;
+        if (it.kind === 'shrink') key = `${it.mix}_retraction_${it.specimenId}`;
+        else if (it.kind === 'shrinkMix') key = `${it.mix}_retraction_mix`;
+        else if (it.kind === 'mechAvg') key = `${it.mix}_${it.testKey}_avg_${it.age}`;
+        else key = `${it.mix}_${it.testKey}_${it.specimenId}`;
+        if (existingKeys.has(key)) continue;
+        if (prev.length + toAdd.length >= 100) break;
+        existingKeys.add(key);
+        toAdd.push({ key, ...it });
+      }
+      // Set color defaults for new
+      setColorMap(m => {
+        const next = { ...m };
+        toAdd.forEach((it, i) => {
+          if (!next[it.key]) next[it.key] = PALETTE[(prev.length + i) % PALETTE.length];
+        });
+        return next;
+      });
+      setVisibleMap(m => {
+        const next = { ...m };
+        toAdd.forEach(it => { if (next[it.key] === undefined) next[it.key] = true; });
+        return next;
+      });
+      return [...prev, ...toAdd];
+    });
+  };
+  const addItem = (item) => addMany([item]);
+
+  const removeItem = (key) => {
+    setSelected(s => s.filter(x => x.key !== key));
+  };
+
+  // Determinar el "modo" predominante para decidir ejes
+  const hasShrink = selected.some(s => s.kind === 'shrink' || s.kind === 'shrinkMix');
+  const hasMech = selected.some(s => s.kind === 'mech' || s.kind === 'mechAvg');
+  const mixedMode = hasShrink && hasMech;
+
+  // Compose series for the plot
+  const toShrinkUnit = (v) => shrinkUnit === 'percent' ? window.shrinkToPercent(v) : v;
+
+  let series = selected.filter(s => visibleMap[s.key] !== false).map((s, i) => {
+    const color = colorMap[s.key] || PALETTE[i % PALETTE.length];
+    const name = nameMap[s.key];
+
+    if (s.kind === 'shrink') {
+      const spec = state.results[s.mix]?.retraction?.find(x => x.id === s.specimenId);
+      const seriesData = spec && window.shrinkageSeries(spec);
+      if (!seriesData || seriesData.points.length === 0) return null;
+      return {
+        points: seriesData.points.map(p => ({ disp: p.t, load: toShrinkUnit(p.change), t: p.t, stress: toShrinkUnit(p.change), strain: 0, elong: 0 })),
+        color,
+        label: name || `N${s.mix} R-${s.specimenId}`,
+        key: s.key,
+        kind: 'shrink',
+        smooth: true,
+      };
+    }
+    if (s.kind === 'shrinkMix') {
+      const retr = state.results[s.mix]?.retraction;
+      const pts = retr ? window.shrinkageMixSeries(retr) : [];
+      if (!pts.length) return null;
+      return {
+        points: pts.map(p => ({ disp: p.t, load: toShrinkUnit(p.change), t: p.t, stress: toShrinkUnit(p.change), strain: 0, elong: 0 })),
+        color,
+        label: name || `N${s.mix} R-avg`,
+        key: s.key,
+        kind: 'shrinkMix',
+        smooth: true,
+      };
+    }
+    if (s.kind === 'mechAvg') {
+      // Promedio de réplicas mecánicas en (mix, test, age)
+      const allSpecs = state.results[s.mix]?.[s.testKey] || [];
+      const specsAtAge = allSpecs.filter(x => x.age === s.age && x.parsed && x.parsed.pmax > 0);
+      if (specsAtAge.length === 0) return null;
+      const seriesPts = specsAtAge.map(spec => {
+        const proc = processMech(spec, s.testKey, viewState === 'pure');
+        let pts = proc.points;
+        if (unitMode === 'MPa') {
+          pts = pts.map(p => {
+            const mpa = window.computeStressMPa(p.load, s.testKey, spec);
+            return { ...p, load: mpa != null ? mpa : 0 };
+          });
+        }
+        return pts;
+      });
+      // Interpolar en X común
+      const allXs = new Set();
+      for (const pts of seriesPts) for (const p of pts) allXs.add(Math.round(p.disp * 1000) / 1000);
+      const xsSorted = [...allXs].sort((a, b) => a - b);
+      const sample = (pts, x) => {
+        if (pts.length === 0) return null;
+        if (x < pts[0].disp || x > pts[pts.length - 1].disp) return null;
+        for (let i = 1; i < pts.length; i++) {
+          if (pts[i].disp >= x) {
+            const a = pts[i - 1], b = pts[i];
+            const t = b.disp === a.disp ? 0 : (x - a.disp) / (b.disp - a.disp);
+            return a.load + t * (b.load - a.load);
+          }
+        }
+        return null;
+      };
+      const avgPts = [];
+      for (const x of xsSorted) {
+        const vals = seriesPts.map(pts => sample(pts, x)).filter(v => v != null);
+        if (vals.length === 0) continue;
+        const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+        avgPts.push({ disp: x, load: m, t: x, stress: m, strain: 0, elong: 0 });
+      }
+      if (avgPts.length === 0) return null;
+      return {
+        points: avgPts,
+        color,
+        label: name || `N${s.mix} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`,
+        key: s.key,
+        kind: 'mechAvg',
+      };
+    }
+    // mech
+    const spec = state.results[s.mix]?.[s.testKey]?.find(x => x.id === s.specimenId);
+    if (!spec || !spec.parsed) return null;
+    const showRaw = rawModeMap[s.key] || viewState === 'pure';
+    const proc = processMech(spec, s.testKey, showRaw);
+    let pts = proc.points;
+    if (unitMode === 'MPa') {
+      pts = pts.map(p => {
+        const mpa = window.computeStressMPa(p.load, s.testKey, spec);
+        return { ...p, load: mpa != null ? mpa : 0 };
+      });
+    }
+    return {
+      points: pts,
+      color,
+      label: name || `N${s.mix} ${s.testKey[0].toUpperCase()}-${s.specimenId}`,
+      key: s.key,
+      kind: 'mech',
+    };
+  }).filter(Boolean);
+
+  // Codificación por factor del diseño: color y/o estilo de línea según el nivel (−/0/+).
+  if (colorBy !== 'none' || lineBy !== 'none') {
+    const mixByKey = {}; selected.forEach(s => { mixByKey[s.key] = s.mix; });
+    series = series.map(sr => {
+      const d = designByRun[mixByKey[sr.key]];
+      if (!d) return sr;
+      const next = { ...sr };
+      if (colorBy !== 'none' && d[colorBy] != null) next.color = LEVEL_COLOR[d[colorBy]] || sr.color;
+      if (lineBy !== 'none' && d[lineBy] != null) next.dash = LEVEL_DASH[d[lineBy]];
+      return next;
+    });
+  }
+
+  // Boceto de corrección: curvas crudas (originales) en trazo claro detrás de las procesadas.
+  const ghostSeries = [];
+  if (showGhost && viewState === 'processed' && (!hasShrink || hasMech)) {
+    selected.filter(s => visibleMap[s.key] !== false && s.kind === 'mech').forEach(s => {
+      const spec = state.results[s.mix]?.[s.testKey]?.find(x => x.id === s.specimenId);
+      if (!spec || !spec.parsed || !spec.correction && !spec.trimIdx && spec.trimEndIdx == null) return;
+      const { dx, dy } = mechShift(spec, s.testKey);
+      let pts = spec.parsed.points.map(p => ({ ...p, disp: p.disp - dx, load: p.load - dy }));
+      if (unitMode === 'MPa') pts = pts.map(p => { const mpa = window.computeStressMPa(p.load, s.testKey, spec); return { ...p, load: mpa != null ? mpa : 0 }; });
+      let gColor = colorMap[s.key] || '#888';
+      const gd = designByRun[s.mix];
+      if (colorBy !== 'none' && gd && gd[colorBy] != null) gColor = LEVEL_COLOR[gd[colorBy]] || gColor;
+      ghostSeries.push({ points: pts, color: gColor, key: s.key + '_ghost', kind: 'ghost' });
+    });
+  }
+  const plotSeries = [...ghostSeries, ...series];
+
+  // Extensión automática (para precargar inputs manuales).
+  const autoExtent = React.useMemo(() => {
+    const pts = plotSeries.flatMap(s => s.points);
+    if (!pts.length) return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 };
+    const xs = pts.map(p => p.disp), ys = pts.map(p => p.load);
+    return { xMin: Math.min(0, ...xs), xMax: Math.max(...xs), yMin: Math.min(0, ...ys), yMax: Math.max(...ys) };
+  }, [plotSeries]);
+  const enterManual = () => {
+    const r = (v) => Math.round(v * 1000) / 1000;
+    setManualAxis({ xMin: r(autoExtent.xMin), xMax: r(autoExtent.xMax), yMin: r(autoExtent.yMin), yMax: r(autoExtent.yMax) });
+    setAxisMode('manual');
+  };
+  const setAx = (k, v) => setManualAxis(a => ({ ...a, [k]: v === '' ? '' : parseFloat(v) }));
+  const effectiveViewBox = axisMode === 'manual'
+    ? { xMin: +manualAxis.xMin || 0, xMax: +manualAxis.xMax || 1, yMin: +manualAxis.yMin || 0, yMax: +manualAxis.yMax || 1 }
+    : zoomViewBox;
+
+  const exportPNG = async () => {
+    const svg = document.querySelector('.compare-plot-wrap svg');
+    if (!svg) return;
+    const xml = new XMLSerializer().serializeToString(svg);
+    const blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = svg.clientWidth * 2; canvas.height = svg.clientHeight * 2;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      ctx.fillStyle = 'white'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      canvas.toBlob(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = 'comparacion.png'; a.click();
+      });
+    };
+    img.src = url;
+  };
+
+  const exportCSV = () => {
+    let csv = 'Curve,disp_mm,load_' + unitMode + '\n';
+    series.forEach(s => {
+      s.points.forEach(p => {
+        csv += `"${s.label}",${p.disp.toFixed(4)},${p.load.toFixed(4)}\n`;
+      });
+    });
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'comparacion.csv'; a.click();
+  };
+
+  return (
+    <div className="comparator">
+      <div className="comp-header">
+        <h2>{T.comparator || 'Comparador'}</h2>
+        <div className="comp-actions">
+          {hasShrink && !hasMech ? (
+            <div className="unit-toggle">
+              <button className={shrinkUnit === 'um' ? 'active' : ''} onClick={() => setShrinkUnit('um')}>μm/m</button>
+              <button className={shrinkUnit === 'percent' ? 'active' : ''} onClick={() => setShrinkUnit('percent')}>%</button>
+            </div>
+          ) : (
+            <div className="unit-toggle">
+              <button className={unitMode === 'kN' ? 'active' : ''} onClick={() => setUnitMode('kN')}>kN</button>
+              <button className={unitMode === 'MPa' ? 'active' : ''} onClick={() => setUnitMode('MPa')}>MPa</button>
+            </div>
+          )}
+          <label style={{display:'none'}}>
+            <input type="checkbox" />
+          </label>
+          <button className="vt-btn" onClick={() => setPicker(true)} disabled={selected.length >= 100}>
+            + {T.addCurve || 'Añadir curva'}
+          </button>
+          <button className="vt-btn" onClick={exportPNG} disabled={!series.length}>PNG</button>
+          <button className="vt-btn" onClick={exportCSV} disabled={!series.length}>CSV</button>
+        </div>
+      </div>
+
+      {(!hasShrink || hasMech) && (
+        <div className="comp-controls">
+          <div className="vt-group">
+            <span className="vt-label">{T.stateLabel || 'Estado'}</span>
+            <div className="unit-toggle">
+              <button className={viewState === 'pure' ? 'active' : ''} onClick={() => setViewState('pure')}>{T.statePure || 'Puro'}</button>
+              <button className={viewState === 'processed' ? 'active' : ''} onClick={() => setViewState('processed')}>{T.stateProcessed || 'Procesado'}</button>
+            </div>
+            <label className={'vt-check' + (viewState !== 'processed' ? ' disabled' : '')}
+                   title={T.ghostHint || 'Dibuja las curvas crudas originales como boceto claro detrás'}>
+              <input type="checkbox" checked={showGhost && viewState === 'processed'} disabled={viewState !== 'processed'}
+                     onChange={(e) => setShowGhost(e.target.checked)} />
+              ✎ {T.showGhost || 'Boceto de corrección'}
+            </label>
+          </div>
+          <div className="vt-group">
+            <span className="vt-label">{T.axisLabel || 'Ejes'}</span>
+            <div className="unit-toggle">
+              <button className={axisMode === 'auto' ? 'active' : ''} onClick={() => setAxisMode('auto')}>{T.axisAuto || 'Auto'}</button>
+              <button className={axisMode === 'manual' ? 'active' : ''} onClick={enterManual}>{T.axisManual || 'Manual'}</button>
+            </div>
+            {axisMode === 'manual' && (
+              <div className="axis-inputs">
+                <label>X<input type="number" step="any" value={manualAxis.xMin} onChange={(e) => setAx('xMin', e.target.value)} /></label>
+                <span>–</span>
+                <label><input type="number" step="any" value={manualAxis.xMax} onChange={(e) => setAx('xMax', e.target.value)} /></label>
+                <label>Y<input type="number" step="any" value={manualAxis.yMin} onChange={(e) => setAx('yMin', e.target.value)} /></label>
+                <span>–</span>
+                <label><input type="number" step="any" value={manualAxis.yMax} onChange={(e) => setAx('yMax', e.target.value)} /></label>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selected.length > 0 && (
+        <div className="comp-controls comp-encode">
+          <div className="vt-group">
+            <span className="vt-label">{T.encodeBy || 'Codificar por factor'}</span>
+            <label className="enc-sel">{T.colorByLabel || 'Color'}
+              <select value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
+                <option value="none">{T.encNone || '— (manual)'}</option>
+                {COMP_FACTORS.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </label>
+            <label className="enc-sel">{T.lineByLabel || 'Línea'}
+              <select value={lineBy} onChange={(e) => setLineBy(e.target.value)}>
+                <option value="none">{T.encNone || '— (continua)'}</option>
+                {COMP_FACTORS.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </label>
+          </div>
+          {(colorBy !== 'none' || lineBy !== 'none') && (
+            <div className="enc-legend">
+              {['-', '0', '+'].map(lv => (
+                <span key={lv} className="enc-item">
+                  <svg width="34" height="12">
+                    <line x1="1" y1="6" x2="33" y2="6"
+                      stroke={colorBy !== 'none' ? LEVEL_COLOR[lv] : 'var(--text-2)'}
+                      strokeWidth="2.4"
+                      strokeDasharray={lineBy !== 'none' && LEVEL_DASH[lv] !== 'none' ? LEVEL_DASH[lv] : undefined} />
+                  </svg>
+                  {LEVEL_NAME[lv]}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="comp-layout">
+        <div className="compare-plot-wrap">
+          {axisMode === 'auto' && zoomViewBox && (
+            <div className="zoom-reset-bar">
+              <span>Zoom activo</span>
+              <button className="vt-btn" onClick={() => setZoomViewBox(null)}>↺ Reset zoom</button>
+            </div>
+          )}
+          <CurvePlot
+            series={plotSeries}
+            xLabel={hasShrink && !hasMech ? (T.timeDays || 'Tiempo (días)') : (T.disp || 'Desplazamiento (mm)')}
+            yLabel={hasShrink && !hasMech
+              ? (shrinkUnit === 'percent' ? (T.shrinkChangePct || 'Cambio Δ (%)') : (T.shrinkChange || 'Cambio Δ (μm/m)'))
+              : (unitMode === 'kN' ? 'Carga P (kN)' : 'Tensión σ (MPa)')}
+            width={900} height={520}
+            invertY={hasShrink && !hasMech}
+            highlightPmax={false} highlightFirstPeak={false}
+            viewBox={effectiveViewBox}
+            onZoom={axisMode === 'manual' ? null : ((box) => setZoomViewBox(box))}
+          />
+          {mixedMode && (
+            <div className="viewer-hint" style={{margin: 8}}>
+              {T.compareMixedWarn || 'Estás mezclando ensayos mecánicos y de retracción: los ejes pueden no ser comparables.'}
+            </div>
+          )}
+        </div>
+        <div className="comp-legend">
+          <div className="legend-title">{T.curves || 'Curvas'} ({series.length}/{selected.length})</div>
+          {selected.length === 0 && <div className="hint-empty">{T.compareEmpty || 'Añade curvas para comparar.'}</div>}
+          {selected.map((s, i) => {
+            const color = colorMap[s.key] || PALETTE[i % PALETTE.length];
+            const visible = visibleMap[s.key] !== false;
+            let defaultName, statsLine;
+            if (s.kind === 'shrink') {
+              const spec = state.results[s.mix]?.retraction?.find(x => x.id === s.specimenId);
+              const seriesData = spec && window.shrinkageSeries(spec);
+              const last = seriesData?.points[seriesData.points.length - 1];
+              defaultName = `N${s.mix} R-${s.specimenId}`;
+              statsLine = `Δ${last?.t || '?'}d: ${last?.change?.toFixed(0) || '—'} μm/m`;
+            } else if (s.kind === 'shrinkMix') {
+              const retr = state.results[s.mix]?.retraction;
+              const pts = retr ? window.shrinkageMixSeries(retr) : [];
+              const last = pts[pts.length - 1];
+              defaultName = `N${s.mix} R-avg`;
+              statsLine = `Δ${last?.t || '?'}d: ${last?.change?.toFixed(0) || '—'} μm/m`;
+            } else if (s.kind === 'mechAvg') {
+              const allSpecs = state.results[s.mix]?.[s.testKey] || [];
+              const specsAtAge = allSpecs.filter(x => x.age === s.age && x.parsed && x.parsed.pmax > 0);
+              const pmaxes = specsAtAge.map(spec => {
+                const t = (spec.trimIdx || spec.trimEndIdx != null) ? window.applyTrim(spec.parsed, spec.trimIdx, spec.trimEndIdx) : spec.parsed;
+                return t.pmax;
+              });
+              const avgPmax = pmaxes.length ? pmaxes.reduce((a,b)=>a+b,0)/pmaxes.length : null;
+              defaultName = `N${s.mix} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`;
+              statsLine = `Pmax̄ ${avgPmax?.toFixed(2) || '—'} kN · ${specsAtAge.length} probetas · ${s.age}d`;
+            } else {
+              const spec = state.results[s.mix]?.[s.testKey]?.find(x => x.id === s.specimenId);
+              const trimmed = spec && (spec.trimIdx || spec.trimEndIdx != null)
+                ? window.applyTrim(spec.parsed, spec.trimIdx, spec.trimEndIdx)
+                : spec?.parsed;
+              defaultName = `N${s.mix} ${s.testKey[0].toUpperCase()}-${s.specimenId}`;
+              statsLine = `Pmax: ${trimmed?.pmax?.toFixed(2) || '—'} kN · σmax: ${trimmed?.smax?.toFixed(1) || '—'} MPa · ${spec?.age}d`;
+            }
+            const name = nameMap[s.key] || defaultName;
+            const isMech = s.kind === 'mech';
+            const showRaw = rawModeMap[s.key];
+            return (
+              <div key={s.key} className="legend-row" style={{gridTemplateColumns: '20px 26px 1fr auto auto auto'}}>
+                <input type="checkbox" checked={visible} onChange={(e) => setVisibleMap(m => ({ ...m, [s.key]: e.target.checked }))} />
+                <input type="color" value={color} onChange={(e) => setColorMap(m => ({ ...m, [s.key]: e.target.value }))} />
+                <input className="leg-name" value={name} onChange={(e) => setNameMap(m => ({ ...m, [s.key]: e.target.value }))} />
+                {isMech && (
+                  <button
+                    className={'vt-btn' + (showRaw ? ' active' : '')}
+                    style={{fontSize: 9, padding: '1px 5px'}}
+                    title={showRaw ? 'Mostrando datos crudos' : 'Mostrando datos recortados'}
+                    onClick={() => setRawModeMap(m => ({ ...m, [s.key]: !m[s.key] }))}>
+                    {showRaw ? 'RAW' : 'TRIM'}
+                  </button>
+                )}
+                <span className="leg-stats">{statsLine}</span>
+                <button className="leg-x" onClick={() => removeItem(s.key)}>✕</button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {picker && (
+        <CurvePicker state={state}
+          onSelectMany={(items) => { addMany(items); setPicker(false); }}
+          onClose={() => setPicker(false)}
+          T={T} />
+      )}
+    </div>
+  );
+}
+
+// ---------- Curve picker modal (filtros + multi-select) ----------
+function CurvePicker({ state, onSelectMany, onClose, T }) {
+  // Build items: mech (flexion / compression) + mech-avg + shrinkage per specimen + shrinkage mix-avg
+  const items = [];
+  for (const mixStr in state.results) {
+    const mix = parseInt(mixStr);
+    // mechanical: individual + average per (mix, test, age)
+    for (const test of ['flexion', 'compression']) {
+      const specs = state.results[mixStr][test] || [];
+      // group by age
+      const byAge = new Map();
+      for (const s of specs) {
+        if (s.parsed && s.parsed.pmax > 0) {
+          items.push({
+            kind: 'mech', mix, testKey: test, specimenId: s.id,
+            age: s.age, pmax: s.parsed.pmax, smax: s.parsed.smax,
+          });
+          if (!byAge.has(s.age)) byAge.set(s.age, []);
+          byAge.get(s.age).push(s);
+        }
+      }
+      for (const [age, specsAtAge] of byAge.entries()) {
+        if (specsAtAge.length >= 2) {
+          const pmaxes = specsAtAge.map(s => {
+            const t = (s.trimIdx || s.trimEndIdx != null) ? window.applyTrim(s.parsed, s.trimIdx, s.trimEndIdx) : s.parsed;
+            return t.pmax;
+          });
+          const avgPmax = pmaxes.reduce((a,b)=>a+b,0) / pmaxes.length;
+          items.push({
+            kind: 'mechAvg', mix, testKey: test, specimenId: 'avg',
+            age, pmax: avgPmax, smax: 0,
+            specimenIds: specsAtAge.map(s => s.id),
+          });
+        }
+      }
+    }
+    // shrinkage: por probeta (si tiene día 0)
+    const retr = state.results[mixStr]?.retraction || [];
+    for (const sp of retr) {
+      const sd = window.shrinkageSeries(sp);
+      if (sd && sd.points.length > 0) {
+        const last = sd.points[sd.points.length - 1];
+        items.push({
+          kind: 'shrink', mix, testKey: 'retraction', specimenId: sp.id,
+          age: last.t, change: last.change,
+        });
+      }
+    }
+    // shrinkage avg
+    const avgPts = window.shrinkageMixSeries(retr);
+    if (avgPts.length > 0) {
+      const last = avgPts[avgPts.length - 1];
+      items.push({
+        kind: 'shrinkMix', mix, testKey: 'retraction', specimenId: 'avg',
+        age: last.t, change: last.change,
+      });
+    }
+  }
+  items.sort((a, b) => a.mix - b.mix || (a.kind || '').localeCompare(b.kind || '') || (a.testKey || '').localeCompare(b.testKey || '') || (a.specimenId || '').localeCompare(b.specimenId || ''));
+
+  const [text, setText] = React.useState('');
+  const [filterMix, setFilterMix] = React.useState('all');
+  const [filterTest, setFilterTest] = React.useState('all');
+  const [filterAge, setFilterAge] = React.useState('all');
+  const [filterAgg, setFilterAgg] = React.useState('all'); // all | avg | individual
+  const [picked, setPicked] = React.useState(new Set());
+  const [paramFilters, setParamFilters] = React.useState({}); // {BR:'+'|'-'|'0',...}
+
+  // Build factorial design lookup
+  const designByRun = React.useMemo(() => {
+    const m = {};
+    (window.FACTORIAL_DESIGN || []).forEach(d => { m[d.run] = d; });
+    return m;
+  }, []);
+  const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
+  const hasParamFilters = Object.values(paramFilters).some(v => v && v !== 'all');
+
+  const allMixes = [...new Set(items.map(i => i.mix))].sort((a, b) => a - b);
+  const allAges = [...new Set(items.map(i => i.age))].sort((a, b) => a - b);
+
+  const filtered = items.filter(it => {
+    if (filterMix !== 'all' && it.mix !== parseInt(filterMix)) return false;
+    if (filterTest !== 'all') {
+      if (filterTest === 'retraction' && it.kind !== 'shrink' && it.kind !== 'shrinkMix') return false;
+      if (filterTest !== 'retraction' && it.testKey !== filterTest) return false;
+    }
+    if (filterAge !== 'all' && it.age !== parseInt(filterAge)) return false;
+    if (filterAgg === 'avg' && !(it.kind === 'mechAvg' || it.kind === 'shrinkMix')) return false;
+    if (filterAgg === 'individual' && !(it.kind === 'mech' || it.kind === 'shrink')) return false;
+    // param filters (only meaningful for factorial mixes)
+    if (hasParamFilters) {
+      const d = designByRun[it.mix];
+      for (const f of factors) {
+        const want = paramFilters[f];
+        if (want && want !== 'all') {
+          // Map AMF/FVF back to data keys (FACTORIAL_DESIGN uses AMF/FVF now)
+          if (!d || d[f] !== want) return false;
+        }
+      }
+    }
+    if (text) {
+      const s = `N${it.mix} ${it.testKey} ${it.specimenId} ${it.age}d`.toLowerCase();
+      if (!s.includes(text.toLowerCase())) return false;
+    }
+    return true;
+  });
+
+  const keyOf = (it) => {
+    if (it.kind === 'mechAvg') return `${it.mix}_${it.testKey}_avg_${it.age}`;
+    return `${it.mix}_${it.testKey}_${it.specimenId}_${it.kind}`;
+  };
+  const toggle = (it) => {
+    const k = keyOf(it);
+    setPicked(p => {
+      const n = new Set(p);
+      n.has(k) ? n.delete(k) : n.add(k);
+      return n;
+    });
+  };
+  const selectAllVisible = () => {
+    const n = new Set(picked);
+    filtered.forEach(it => n.add(keyOf(it)));
+    setPicked(n);
+  };
+  const clearPicked = () => setPicked(new Set());
+
+  const confirmAdd = () => {
+    const list = items.filter(it => picked.has(keyOf(it))).map(it => ({
+      kind: it.kind, mix: it.mix, testKey: it.testKey, specimenId: it.specimenId,
+      ...(it.kind === 'mechAvg' ? { age: it.age, specimenIds: it.specimenIds } : {}),
+    }));
+    if (list.length === 0) return;
+    onSelectMany(list);
+  };
+
+  const testLabel = (it) => {
+    if (it.kind === 'shrink') return `R-${it.specimenId}`;
+    if (it.kind === 'shrinkMix') return `R-avg`;
+    if (it.kind === 'mechAvg') return `${it.testKey === 'flexion' ? 'F' : 'C'}-avg`;
+    return `${it.testKey === 'flexion' ? 'F' : 'C'}-${it.specimenId}`;
+  };
+  const statLabel = (it) => {
+    if (it.kind === 'shrink' || it.kind === 'shrinkMix') return `Δ ${it.change?.toFixed(0) ?? '—'} μm/m`;
+    if (it.kind === 'mechAvg') return `Pmax̄ ${it.pmax?.toFixed(2)} kN · ${it.specimenIds?.length || 0} probetas`;
+    return `${it.pmax?.toFixed(2)} kN · ${it.smax?.toFixed(1)} MPa`;
+  };
+
+  return (
+    <div className="cal-modal-backdrop" onClick={onClose}>
+      <div className="picker-modal" onClick={(e) => e.stopPropagation()} style={{maxWidth: 820}}>
+        <div className="picker-header">
+          <h3>{T.pickCurve || 'Seleccionar ensayos'}</h3>
+          <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+            <span style={{fontSize: 11, color: 'var(--text-3)'}}>{picked.size} {T.selectedCount || 'seleccionados'}</span>
+            <button className="vt-btn" onClick={selectAllVisible}>{T.selectVisible || 'Todos visibles'}</button>
+            <button className="vt-btn" onClick={clearPicked}>{T.clear || 'Limpiar'}</button>
+            <button className="vt-btn primary" onClick={confirmAdd} disabled={picked.size === 0}>
+              + {T.addSelected || 'Añadir'} ({picked.size})
+            </button>
+            <button className="cal-close" onClick={onClose}>✕</button>
+          </div>
+        </div>
+        <div className="picker-filters">
+          <input className="picker-search" placeholder={T.search || 'Buscar…'}
+                 value={text} onChange={(e) => setText(e.target.value)} />
+          <select value={filterMix} onChange={(e) => setFilterMix(e.target.value)}>
+            <option value="all">{T.allMixes || 'Todas las mezclas'}</option>
+            {allMixes.map(m => <option key={m} value={m}>N{m}</option>)}
+          </select>
+          <select value={filterTest} onChange={(e) => setFilterTest(e.target.value)}>
+            <option value="all">{T.allTests || 'Todos los ensayos'}</option>
+            <option value="retraction">{T.retraction}</option>
+            <option value="flexion">{T.flexion}</option>
+            <option value="compression">{T.compression}</option>
+          </select>
+          <select value={filterAge} onChange={(e) => setFilterAge(e.target.value)}>
+            <option value="all">{T.allAges || 'Todas las edades'}</option>
+            {allAges.map(a => <option key={a} value={a}>{a}{T.day || 'd'}</option>)}
+          </select>
+          <select value={filterAgg} onChange={(e) => setFilterAgg(e.target.value)}>
+            <option value="all">{T.aggAll || 'Promedio + individual'}</option>
+            <option value="avg">{T.aggAvg || 'Solo promedio'}</option>
+            <option value="individual">{T.aggInd || 'Solo individual'}</option>
+          </select>
+        </div>
+        <div className="picker-params">
+          {factors.map(f => (
+            <div key={f} className="picker-param">
+              <span>{f}</span>
+              <select value={paramFilters[f] || 'all'}
+                onChange={(e) => setParamFilters(p => ({ ...p, [f]: e.target.value }))}>
+                <option value="all">—</option>
+                <option value="+">+</option>
+                <option value="0">0</option>
+                <option value="-">−</option>
+              </select>
+            </div>
+          ))}
+          {hasParamFilters && (
+            <button className="vt-btn" style={{fontSize:10, padding:'2px 8px'}}
+              onClick={() => setParamFilters({})}>✕ Limpiar</button>
+          )}
+        </div>
+        <div className="picker-list">
+          {filtered.length === 0 && <div className="hint-empty">{T.noCurves || 'No hay ensayos.'}</div>}
+          {filtered.map(it => {
+            const k = keyOf(it);
+            const sel = picked.has(k);
+            return (
+              <div key={k} className={'picker-item' + (sel ? ' selected' : '')}
+                   onClick={() => toggle(it)}>
+                <input type="checkbox" checked={sel} readOnly />
+                <span className="pi-mix">N{it.mix}</span>
+                <span className="pi-test">{testLabel(it)}</span>
+                <span className="pi-age">{it.age}{T.day || 'd'}</span>
+                <span className="pi-pmax">{statLabel(it)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+window.IndividualViewer = IndividualViewer;
+window.ShrinkageViewer = ShrinkageViewer;
+window.ComparatorView = ComparatorView;
+window.CurvePicker = CurvePicker;
+window.CurvePlot = CurvePlot;
