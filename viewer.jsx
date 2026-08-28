@@ -173,7 +173,11 @@ function CurvePlot({
   legend = null,   // {items, pos, onMove} leyenda de colores arrastrable dentro del gráfico
 }) {
   const W = width, H = height;
-  const padL = 60, padR = 16, padT = 16, padB = 44;
+  // Paddings dinámicos: crecen con el tamaño de letra para que los títulos de eje
+  // nunca se superpongan con los números de los ticks.
+  const padL = Math.max(60, 22 + tickFont * 3.2 + axisLabelFont);
+  const padR = 16, padT = 16;
+  const padB = Math.max(44, 16 + tickFont + axisLabelFont + 12);
 
   // Drag-to-zoom state (only in series/comparator mode when onZoom is provided)
   const [drag, setDrag] = React.useState(null); // {x0,y0,x1,y1} in SVG coords
@@ -309,9 +313,9 @@ function CurvePlot({
         <text key={'ly' + t} x={padL - 8} y={sy(t) + tickFont / 3} textAnchor="end" fontSize={tickFont} fill="#555" fontFamily="ui-monospace, monospace">{t.toFixed(2)}</text>
       ))}
       {/* Axis labels */}
-      <text x={(W + padL) / 2} y={H - 8} textAnchor="middle" fontSize={axisLabelFont} fill="#333">{xLabel}</text>
-      <text x={16} y={(H - padB + padT) / 2} textAnchor="middle" fontSize={axisLabelFont} fill="#333"
-            transform={`rotate(-90 16 ${(H - padB + padT) / 2})`}>{yLabel}</text>
+      <text x={(W + padL) / 2} y={H - 6} textAnchor="middle" fontSize={axisLabelFont} fill="#333">{xLabel}</text>
+      <text x={axisLabelFont} y={(H - padB + padT) / 2} textAnchor="middle" fontSize={axisLabelFont} fill="#333"
+            transform={`rotate(-90 ${axisLabelFont} ${(H - padB + padT) / 2})`}>{yLabel}</text>
 
       {/* Data */}
       {series ? series.map((s, i) => (
@@ -838,6 +842,7 @@ function ComparatorView({ state, T, lang }) {
   const [chartFont, setChartFont] = React.useState({ tick: 11, axis: 12, legend: 12 });
   const [legendPos, setLegendPos] = React.useState(null); // {x,y} en coords SVG; null = auto (arriba-derecha)
   const [showGhost, setShowGhost] = React.useState(false);
+  const [showCurveList, setShowCurveList] = React.useState(true);
   const [axisMode, setAxisMode] = React.useState('auto'); // 'auto' | 'manual'
   const [manualAxis, setManualAxis] = React.useState({ xMin: 0, xMax: 1, yMin: 0, yMax: 1 });
   const [colorBy, setColorBy] = React.useState([]); // factores para codificar color (combinación)
@@ -1298,8 +1303,16 @@ function ComparatorView({ state, T, lang }) {
             </div>
           )}
         </div>
+        {!showCurveList && (
+          <button className="vt-btn" style={{alignSelf: 'flex-start', whiteSpace: 'nowrap'}}
+            onClick={() => setShowCurveList(true)}>◀ {T.curves || 'Curvas'} ({series.length})</button>
+        )}
+        {showCurveList && (
         <div className="comp-legend">
-          <div className="legend-title">{T.curves || 'Curvas'} ({series.length}/{selected.length})</div>
+          <div className="legend-title" style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:6}}>
+            <span>{T.curves || 'Curvas'} ({series.length}/{selected.length})</span>
+            <button className="vt-btn" style={{fontSize:10, padding:'1px 6px'}} onClick={() => setShowCurveList(false)}>▶</button>
+          </div>
           {selected.length === 0 && <div className="hint-empty">{T.compareEmpty || 'Añade curvas para comparar.'}</div>}
           {selected.map((s, i) => {
             const color = colorMap[s.key] || PALETTE[i % PALETTE.length];
@@ -1358,6 +1371,7 @@ function ComparatorView({ state, T, lang }) {
             );
           })}
         </div>
+        )}
       </div>
 
       {picker && (
