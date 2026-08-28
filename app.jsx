@@ -1010,29 +1010,29 @@ function App() {
           <div className="save-cluster">
             <div className="fb-status">
               <span className={'fb-dot' + (fbReady ? ' ready' : '') + (saveError ? ' err' : '')}></span>
-              {!fbReady ? 'conectando…'
+              {!fbReady ? (T.connecting || 'conectando…')
                 : saveError ? '⚠ ' + saveError
-                : saving ? '⟳ Guardando…'
-                : dirty.size > 0 ? `✎ ${dirty.size} sin guardar`
-                : fbLastSync ? `✓ Guardado ${fbLastSync.toLocaleTimeString()}` : 'Conectado'}
+                : saving ? '⟳ ' + (T.saving || 'Guardando…')
+                : dirty.size > 0 ? `✎ ${dirty.size} ${T.unsaved || 'sin guardar'}`
+                : fbLastSync ? `✓ ${T.savedAt || 'Guardado'} ${fbLastSync.toLocaleTimeString()}` : (T.connected || 'Conectado')}
             </div>
             <button className="save-btn" onClick={bulkAutoCorrectFlexion}
               disabled={bulkCorrecting}
-              title="Aplica la corrección automática (0.4/0.8 kN) a todas las probetas de flexión que aún no tengan corrección">
+              title={T.bulkCorrectTitle || 'Aplica la corrección automática (0.4/0.8 kN) a todas las probetas de flexión que aún no tengan corrección'}>
               ⚡ {T.bulkCorrect || 'Corregir flexión (todas)'}
             </button>
             <button className="save-btn" onClick={migrateAllToCloud}
               disabled={!fbReady || migrating != null}
-              title="Reescribe todas las mezclas en la nube al nuevo formato compacto (no requiere re-subir archivos)">
-              {migrating != null ? '⟳ ' + migrating : '⤢ Compactar nube'}
+              title={T.migrateCloudTitle || 'Reescribe todas las mezclas en la nube al nuevo formato compacto (no requiere re-subir archivos)'}>
+              {migrating != null ? '⟳ ' + migrating : '⤢ ' + (T.migrateCloud || 'Compactar nube')}
             </button>
             <button className="save-btn" onClick={() => setShowExportModal(true)}
-              title="Descarga un Excel eligiendo qué variables incluir">
+              title={T.exportExcelTitle || 'Descarga un Excel eligiendo qué variables incluir'}>
               ⬇ {T.exportExcel || 'Exportar'}
             </button>
           </div>
           <div className="lang-picker">
-            {['es', 'en', 'it'].map(l => (
+            {['es', 'en'].map(l => (
               <button key={l} className={lang === l ? 'active' : ''} onClick={() => setLang(l)}>{l.toUpperCase()}</button>
             ))}
           </div>

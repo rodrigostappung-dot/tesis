@@ -116,6 +116,45 @@ window.shrinkageMixSeries = function(retractionSpecs, ages = [0, 1, 7, 28]) {
   return pts;
 };
 
+// ---------- Leyenda de colores arrastrable, dentro del gráfico (SVG) ----------
+// items: [{label, color, dash?}]. pos en coords SVG. onMove({x,y}). Se dibuja dentro del
+// <svg> del gráfico para que se exporte en el PNG y el usuario pueda moverla.
+function DraggableLegend({ items, pos, onMove, W, H, fontSize = 12, title = null }) {
+  const [drag, setDrag] = React.useState(null);
+  if (!items || !items.length) return null;
+  const fs = fontSize, rowH = fs + 7, pad = 9, sw = fs;
+  const titleH = title ? fs + 8 : 0;
+  const longest = Math.max((title || '').length, ...items.map(it => (it.label || '').length));
+  const boxW = pad * 2 + sw + 8 + longest * fs * 0.6;
+  const boxH = pad * 2 + titleH + items.length * rowH;
+  const x = Math.max(0, Math.min(pos ? pos.x : W - boxW - 8, W - boxW));
+  const y = Math.max(0, Math.min(pos ? pos.y : 8, H - boxH));
+  const toSvg = (e) => {
+    const svg = e.currentTarget.ownerSVGElement || e.currentTarget;
+    const r = svg.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * W, y: ((e.clientY - r.top) / r.height) * H };
+  };
+  const onDown = (e) => { e.stopPropagation(); const c = toSvg(e); setDrag({ ox: c.x - x, oy: c.y - y }); };
+  const onMv = (e) => { if (!drag) return; e.stopPropagation(); const c = toSvg(e); onMove && onMove({ x: c.x - drag.ox, y: c.y - drag.oy }); };
+  const onUp = (e) => { if (drag) { e.stopPropagation(); setDrag(null); } };
+  return (
+    <g transform={`translate(${x},${y})`} style={{ cursor: 'move' }}
+       onMouseDown={onDown} onMouseMove={onMv} onMouseUp={onUp} onMouseLeave={onUp}>
+      {drag && <rect x={-x} y={-y} width={W} height={H} fill="transparent" />}
+      <rect x={0} y={0} width={boxW} height={boxH} rx={5} fill="rgba(255,255,255,.92)" stroke="#c9ccd2" strokeWidth="1" />
+      {title && <text x={pad} y={pad + fs} fontSize={fs} fontWeight="600" fill="#333" fontFamily="system-ui, sans-serif">{title}</text>}
+      {items.map((it, i) => (
+        <g key={i} transform={`translate(${pad},${pad + titleH + i * rowH})`}>
+          {it.dash !== undefined
+            ? <line x1={0} y1={sw / 2 + 1} x2={sw + 4} y2={sw / 2 + 1} stroke={it.color || '#666'} strokeWidth="2.6" strokeDasharray={it.dash && it.dash !== 'none' ? it.dash : undefined} />
+            : <rect x={0} y={2} width={sw} height={sw} rx={2} fill={it.color} />}
+          <text x={sw + 9} y={fs} fontSize={fs} fill="#222" fontFamily="system-ui, sans-serif">{it.label}</text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
 // ---------- Curve plot component (SVG, zoom rectangle, click) ----------
 function CurvePlot({
   points, xKey = 'disp', yKey = 'load',
@@ -130,6 +169,8 @@ function CurvePlot({
   series = null,
   ghostPoints = null,   // curva fantasma (sketch) dibujada en tono claro detrás
   onZoom = null,   // called with {xMin,xMax,yMin,yMax} or null to reset
+  tickFont = 11, axisLabelFont = 12,
+  legend = null,   // {items, pos, onMove} leyenda de colores arrastrable dentro del gráfico
 }) {
   const W = width, H = height;
   const padL = 60, padR = 16, padT = 16, padB = 44;
@@ -262,14 +303,14 @@ function CurvePlot({
       <line x1={padL} y1={padT} x2={padL} y2={H - padB} stroke="#666" strokeWidth="1" />
       {/* Tick labels */}
       {showAxes && xTicks.map(t => (
-        <text key={'lx' + t} x={sx(t)} y={H - padB + 16} textAnchor="middle" fontSize="11" fill="#555" fontFamily="ui-monospace, monospace">{t.toFixed(2)}</text>
+        <text key={'lx' + t} x={sx(t)} y={H - padB + tickFont + 5} textAnchor="middle" fontSize={tickFont} fill="#555" fontFamily="ui-monospace, monospace">{t.toFixed(2)}</text>
       ))}
       {showAxes && yTicks.map(t => (
-        <text key={'ly' + t} x={padL - 8} y={sy(t) + 4} textAnchor="end" fontSize="11" fill="#555" fontFamily="ui-monospace, monospace">{t.toFixed(2)}</text>
+        <text key={'ly' + t} x={padL - 8} y={sy(t) + tickFont / 3} textAnchor="end" fontSize={tickFont} fill="#555" fontFamily="ui-monospace, monospace">{t.toFixed(2)}</text>
       ))}
       {/* Axis labels */}
-      <text x={(W + padL) / 2} y={H - 8} textAnchor="middle" fontSize="12" fill="#333">{xLabel}</text>
-      <text x={16} y={(H - padB + padT) / 2} textAnchor="middle" fontSize="12" fill="#333"
+      <text x={(W + padL) / 2} y={H - 8} textAnchor="middle" fontSize={axisLabelFont} fill="#333">{xLabel}</text>
+      <text x={16} y={(H - padB + padT) / 2} textAnchor="middle" fontSize={axisLabelFont} fill="#333"
             transform={`rotate(-90 16 ${(H - padB + padT) / 2})`}>{yLabel}</text>
 
       {/* Data */}
@@ -300,6 +341,14 @@ function CurvePlot({
               onMouseMove={(e) => { if (drag) return; const c = svgCoords(e); setHover({ x: c.x, y: c.y, label: s.label || ('Serie ' + (i + 1)), color: s.color }); }}
               onMouseLeave={() => setHover(null)} />
         )
+      ))}
+
+      {/* Marcadores de primer peak por serie (modo corregido) */}
+      {series && series.map((s, i) => (
+        s.firstPeak && s.kind !== 'ghost' ? (
+          <circle key={'fp' + i} cx={sx(s.firstPeak[xKey] ?? s.firstPeak.disp)} cy={sy(s.firstPeak[yKey] ?? s.firstPeak.load)}
+                  r="4" fill="#fff" stroke={s.color} strokeWidth="2" pointerEvents="none" />
+        ) : null
       ))}
 
       {/* Markers */}
@@ -343,9 +392,12 @@ function CurvePlot({
           </g>
         );
       })()}
+      {legend && <DraggableLegend items={legend.items} pos={legend.pos} onMove={legend.onMove} W={W} H={H} fontSize={legend.fontSize || 12} title={legend.title} />}
     </svg>
   );
 }
+window.DraggableLegend = DraggableLegend;
+window.CurvePlot = CurvePlot;
 
 // Corrección de curva: dados 2 índices, traza recta por esos puntos, halla disp donde load=0,
 // elimina puntos anteriores al punto 1 y reacomoda para partir desde (0,0).
@@ -394,6 +446,88 @@ window.findAutoCorrectionPoints = function(parsed, targets) {
   const i2 = findNearestAtFirstCrossing(targets[1], i1 + 1);
   if (i2 == null || i2 === i1) return null;
   return { i1, i2 };
+};
+
+// Mezclas donde la corrección de primer peak NO aplica en flexión a 28 días.
+window.FIRSTPEAK_EXCLUDE_28D = new Set([1,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,23,24,25,27,28,29,30,31,33,43]);
+
+// Corrección de PRIMER PEAK (solo flexión). Halla el primer peak como la intersección
+// de dos rectas:
+//   recta 1: por los puntos de carga 1 kN y 2 kN.
+//   recta 2: por los puntos de desplazamiento 0.25 mm y 0.4 mm.
+// Solo se aplica si la curva supera 2.2 kN y el peak resultante está por sobre los 2 kN.
+// Para flexión a 28 días no aplica en un conjunto de mezclas (FIRSTPEAK_EXCLUDE_28D).
+// Desde el primer peak y hasta 1.25 mm, cada delta de desplazamiento se escala por
+// (pendiente recta 2 / pendiente recta 1); más allá de 1.25 mm se conserva el desfase
+// acumulado sin reescalar. No sobreescribe: devuelve una nueva curva (o null si no aplica).
+window.applyFirstPeakCorrection = function(parsed, opts) {
+  opts = opts || {};
+  if (!parsed || !parsed.points || parsed.points.length < 2) return null;
+  const pts = parsed.points;
+  let pmax = 0; for (const p of pts) if (p.load > pmax) pmax = p.load;
+  if (pmax < 2.2) return null; // no supera 2.2 kN: no hay primer peak que identificar
+  if (opts.age === 28 && window.FIRSTPEAK_EXCLUDE_28D.has(opts.mix)) return null;
+
+  // Desplazamiento donde la carga cruza por primera vez un objetivo (interpolado).
+  const dispAtLoad = (target) => {
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i].load >= target && pts[i - 1].load < target) {
+        const a = pts[i - 1], b = pts[i];
+        const den = b.load - a.load;
+        const t = den === 0 ? 0 : (target - a.load) / den;
+        return a.disp + t * (b.disp - a.disp);
+      }
+    }
+    return null;
+  };
+  // Carga en un desplazamiento dado (interpolado).
+  const loadAtDisp = (target) => {
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i].disp >= target && pts[i - 1].disp <= target) {
+        const a = pts[i - 1], b = pts[i];
+        const den = b.disp - a.disp;
+        const t = den === 0 ? 0 : (target - a.disp) / den;
+        return a.load + t * (b.load - a.load);
+      }
+    }
+    return null;
+  };
+
+  const d1 = dispAtLoad(1), d2 = dispAtLoad(2);
+  const L025 = loadAtDisp(0.25), L04 = loadAtDisp(0.4);
+  if (d1 == null || d2 == null || L025 == null || L04 == null) return null;
+  const m1 = (2 - 1) / (d2 - d1);           // pendiente recta 1 (cargas 1 y 2 kN)
+  const m2 = (L04 - L025) / (0.4 - 0.25);   // pendiente recta 2 (disp 0.25 y 0.4 mm)
+  if (!isFinite(m1) || !isFinite(m2) || m1 === 0 || m1 === m2) return null;
+
+  // Intersección: 1 + m1*(d - d1) = L025 + m2*(d - 0.25)
+  const dStar = (L025 - m2 * 0.25 - 1 + m1 * d1) / (m1 - m2);
+  const loadStar = 1 + m1 * (dStar - d1);
+  if (!isFinite(dStar)) return null;
+  if (!(loadStar > 2)) return null; // el primer peak siempre debe estar por sobre los 2 kN
+
+  const DMAX = 1.25; // la corrección de desplazamiento solo aplica desde el primer peak hasta 1.25 mm
+  const k = m2 / m1; // factor de escala del desplazamiento en ese tramo
+  const dMaxCorr = dStar + (DMAX - dStar) * k; // desplazamiento corregido en 1.25 mm
+  const corrected = pts.map(p => {
+    if (p.disp <= dStar) return { ...p };
+    if (p.disp <= DMAX) return { ...p, disp: dStar + (p.disp - dStar) * k };
+    return { ...p, disp: dMaxCorr + (p.disp - DMAX) }; // más allá de 1.25 mm: sin reescalar, con el desfase acumulado
+  });
+  const out = window.truncateAtMax({ ...parsed, points: corrected });
+  return { ...out, firstPeakDisp: dStar, firstPeakLoad: loadStar, _m1: m1, _m2: m2, _k: k };
+};
+
+// Recorta una curva para que solo se muestre hasta 0.5 mm después de la carga máxima global
+// (o hasta el fin de los datos, lo que ocurra primero). Se aplica a TODAS las curvas en modo corregido.
+window.truncateAtMax = function(parsed) {
+  if (!parsed || !parsed.points || !parsed.points.length) return parsed;
+  const pts = parsed.points;
+  let pmax = 0, csmax = 0, idxPmax = 0;
+  pts.forEach((p, i) => { if (p.load > pmax) { pmax = p.load; idxPmax = i; } if ((p.stress || 0) > csmax) csmax = p.stress; });
+  const cutDisp = pts[idxPmax].disp + 0.5;
+  const trimmedPts = pts.filter(p => p.disp <= cutDisp);
+  return { ...parsed, points: trimmedPts, pmax, smax: csmax, idxPmax: Math.min(idxPmax, trimmedPts.length - 1), nPoints: trimmedPts.length };
 };
 
 // ---------- Visualizador individual ----------
@@ -701,6 +835,8 @@ function ComparatorView({ state, T, lang }) {
   const [rawModeMap, setRawModeMap] = React.useState({}); // key -> true = show raw (no trim)
   const [zoomViewBox, setZoomViewBox] = React.useState(null); // {xMin,xMax,yMin,yMax} or null
   const [viewState, setViewState] = React.useState('processed'); // 'pure' | 'processed'
+  const [chartFont, setChartFont] = React.useState({ tick: 11, axis: 12, legend: 12 });
+  const [legendPos, setLegendPos] = React.useState(null); // {x,y} en coords SVG; null = auto (arriba-derecha)
   const [showGhost, setShowGhost] = React.useState(false);
   const [axisMode, setAxisMode] = React.useState('auto'); // 'auto' | 'manual'
   const [manualAxis, setManualAxis] = React.useState({ xMin: 0, xMax: 1, yMin: 0, yMax: 1 });
@@ -743,12 +879,20 @@ function ComparatorView({ state, T, lang }) {
   }, [colorBy, selected, designByRun, comboColors]);
   const setComboColor = (sig, color) => setComboColors(m => ({ ...m, [sig]: color }));
 
-  // Procesa una probeta mecánica: corrección (compresión y flexión) + recorte. raw = sin procesar.
-  const processMech = (spec, testKey, raw) => {
-    if (raw) return spec.parsed;
+  // Procesa una probeta mecánica según el estado de visualización.
+  //   'pure'      -> curva cruda, sin tocar.
+  //   'processed' -> corrección (compresión/flexión) + recorte.
+  //   'corrected' -> processed + corrección automática de primer peak (solo flexión).
+  const processMech = (spec, testKey, view, mix) => {
+    if (view === true || view === 'pure') return spec.parsed;
     let p = spec.parsed;
     if (spec.correction) p = window.applyCorrection(p, spec.correction);
     if (spec.trimIdx || spec.trimEndIdx != null) p = window.applyTrim(p, spec.trimIdx, spec.trimEndIdx);
+    if (view === 'corrected' && testKey === 'flexion') {
+      const fp = window.applyFirstPeakCorrection(p, { mix: mix != null ? mix : spec.mix, age: spec.age });
+      if (fp) return fp;
+      return window.truncateAtMax(p); // aunque no aplique el primer peak, recortar a 0.5 mm tras la carga máxima
+    }
     return p;
   };
   // Desplazamiento aplicado al inicio por la corrección/recorte (para alinear el boceto crudo).
@@ -848,7 +992,7 @@ function ComparatorView({ state, T, lang }) {
       const specsAtAge = allSpecs.filter(x => x.age === s.age && x.parsed && x.parsed.pmax > 0);
       if (specsAtAge.length === 0) return null;
       const seriesPts = specsAtAge.map(spec => {
-        const proc = processMech(spec, s.testKey, viewState === 'pure');
+        const proc = processMech(spec, s.testKey, viewState, s.mix);
         let pts = proc.points;
         if (unitMode === 'MPa') {
           pts = pts.map(p => {
@@ -894,7 +1038,7 @@ function ComparatorView({ state, T, lang }) {
     const spec = state.results[s.mix]?.[s.testKey]?.find(x => x.id === s.specimenId);
     if (!spec || !spec.parsed) return null;
     const showRaw = rawModeMap[s.key] || viewState === 'pure';
-    const proc = processMech(spec, s.testKey, showRaw);
+    const proc = processMech(spec, s.testKey, showRaw ? 'pure' : viewState, s.mix);
     let pts = proc.points;
     if (unitMode === 'MPa') {
       pts = pts.map(p => {
@@ -902,12 +1046,19 @@ function ComparatorView({ state, T, lang }) {
         return { ...p, load: mpa != null ? mpa : 0 };
       });
     }
+    let firstPeak = null;
+    if (proc.firstPeakDisp != null) {
+      let fl = proc.firstPeakLoad;
+      if (unitMode === 'MPa') { const mpa = window.computeStressMPa(fl, s.testKey, spec); fl = mpa != null ? mpa : 0; }
+      firstPeak = { disp: proc.firstPeakDisp, load: fl };
+    }
     return {
       points: pts,
       color,
       label: name || `N${s.mix} ${s.testKey[0].toUpperCase()}-${s.specimenId}`,
       key: s.key,
       kind: 'mech',
+      firstPeak,
     };
   }).filter(Boolean);
 
@@ -962,6 +1113,12 @@ function ComparatorView({ state, T, lang }) {
   const effectiveViewBox = axisMode === 'manual'
     ? { xMin: +manualAxis.xMin || 0, xMax: +manualAxis.xMax || 1, yMin: +manualAxis.yMin || 0, yMax: +manualAxis.yMax || 1 }
     : zoomViewBox;
+
+  // Leyenda de colores dentro del gráfico (solo si hay filtro de color o de línea activo).
+  const legendItems = [];
+  if (colorBy.length) [...colorCombos.values()].forEach(info => legendItems.push({ label: info.sig, color: info.color }));
+  if (lineBy !== 'none') ['-', '0', '+'].forEach(lv => legendItems.push({ label: `${lineBy} ${LEVEL_NAME[lv]}`, color: '#555', dash: LEVEL_DASH[lv] }));
+  const chartLegend = legendItems.length ? { items: legendItems, pos: legendPos, onMove: setLegendPos, fontSize: chartFont.legend } : null;
 
   const exportPNG = async () => {
     const svg = document.querySelector('.compare-plot-wrap svg');
@@ -1035,6 +1192,7 @@ function ComparatorView({ state, T, lang }) {
             <div className="unit-toggle">
               <button className={viewState === 'pure' ? 'active' : ''} onClick={() => setViewState('pure')}>{T.statePure || 'Puro'}</button>
               <button className={viewState === 'processed' ? 'active' : ''} onClick={() => setViewState('processed')}>{T.stateProcessed || 'Procesado'}</button>
+              <button className={viewState === 'corrected' ? 'active' : ''} onClick={() => setViewState('corrected')} title="Corrige el primer peak en flexión (curvas &gt;2.2 kN) y reescala el desplazamiento posterior">{T.stateCorrected || 'Corregido'}</button>
             </div>
             <label className={'vt-check' + (viewState !== 'processed' ? ' disabled' : '')}
                    title={T.ghostHint || 'Dibuja las curvas crudas originales como boceto claro detrás'}>
@@ -1059,6 +1217,14 @@ function ComparatorView({ state, T, lang }) {
                 <label><input type="number" step="any" value={manualAxis.yMax} onChange={(e) => setAx('yMax', e.target.value)} /></label>
               </div>
             )}
+          </div>
+          <div className="vt-group">
+            <span className="vt-label">{T.fontSizes || 'Tamaño de letra'}</span>
+            <div className="font-inputs">
+              <label>{T.fontTitles || 'Títulos'}<input type="number" min="6" max="40" value={chartFont.axis} onChange={(e) => setChartFont(f => ({ ...f, axis: +e.target.value || 12 }))} /></label>
+              <label>{T.fontAxes || 'Ejes'}<input type="number" min="6" max="40" value={chartFont.tick} onChange={(e) => setChartFont(f => ({ ...f, tick: +e.target.value || 11 }))} /></label>
+              <label>{T.fontLegend || 'Leyenda'}<input type="number" min="6" max="40" value={chartFont.legend} onChange={(e) => setChartFont(f => ({ ...f, legend: +e.target.value || 12 }))} /></label>
+            </div>
           </div>
         </div>
       )}
@@ -1122,6 +1288,8 @@ function ComparatorView({ state, T, lang }) {
             invertY={hasShrink && !hasMech}
             highlightPmax={false} highlightFirstPeak={false}
             viewBox={effectiveViewBox}
+            tickFont={chartFont.tick} axisLabelFont={chartFont.axis}
+            legend={chartLegend}
             onZoom={axisMode === 'manual' ? null : ((box) => setZoomViewBox(box))}
           />
           {mixedMode && (

@@ -10,12 +10,19 @@ const ANALYSIS_PALETTE = [
   '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
 ];
 
-// ---------- Métricas mecánicas (siempre sobre curva corregida + recortada) ----------
-function analysisProcessMech(spec) {
+// ---------- Métricas mecánicas ----------
+// view: 'pure' (curva cruda) | 'processed' (corrección + recorte) | 'corrected' (+ primer peak, solo flexión).
+function analysisProcessMech(spec, testKey, view, mix) {
   if (!spec || !spec.parsed) return null;
+  if (view === 'pure') return spec.parsed;
   let p = spec.parsed;
   if (spec.correction) p = window.applyCorrection(p, spec.correction);
   if (spec.trimIdx || spec.trimEndIdx != null) p = window.applyTrim(p, spec.trimIdx, spec.trimEndIdx);
+  if (view === 'corrected' && testKey === 'flexion' && window.applyFirstPeakCorrection) {
+    const fp = window.applyFirstPeakCorrection(p, { mix: mix != null ? mix : spec.mix, age: spec.age });
+    if (fp) return fp;
+    if (window.truncateAtMax) return window.truncateAtMax(p);
+  }
   return p;
 }
 
@@ -29,51 +36,65 @@ function analysisSlope(spec) {
   return isFinite(m) ? m : null;
 }
 
-// Devuelve {slope, pmaxKN, pmaxMPa, defMax} para una probeta, o null si no tiene datos.
-function analysisSpecMetrics(spec, testKey) {
-  const p = analysisProcessMech(spec);
+// Devuelve {slope, pmaxKN, pmaxMPa, defMax, fpKN, fpMPa, fpDef} para una probeta, o null.
+function analysisSpecMetrics(spec, testKey, mix, view) {
+  view = view || 'corrected';
+  const p = analysisProcessMech(spec, testKey, view, mix);
   if (!p || !p.points || !p.points.length || !(p.pmax > 0)) return null;
   let idx = 0, mv = -Infinity;
   p.points.forEach((pt, i) => { if (pt.load > mv) { mv = pt.load; idx = i; } });
   const pk = p.points[idx] || {};
   const pmaxKN = mv > 0 ? mv : p.pmax;
   const pmaxMPa = window.computeStressMPa(pmaxKN, testKey, spec);
+  // Primer peak: se calcula siempre sobre la curva procesada (concepto independiente de la vista).
+  let fpKN = null, fpMPa = null, fpDef = null;
+  if (testKey === 'flexion' && window.applyFirstPeakCorrection) {
+    const base = analysisProcessMech(spec, testKey, 'processed', mix);
+    const fp = base && window.applyFirstPeakCorrection(base, { mix: mix != null ? mix : spec.mix, age: spec.age });
+    if (fp) { fpKN = fp.firstPeakLoad; fpDef = fp.firstPeakDisp; fpMPa = window.computeStressMPa(fpKN, testKey, spec); }
+  }
   return {
     slope: analysisSlope(spec),
     pmaxKN,
     pmaxMPa,
     defMax: pk.disp != null ? pk.disp : null,
+    fpKN, fpMPa, fpDef,
   };
 }
 
 // Promedio de una métrica mecánica entre las probetas de (mix, test) a una edad dada.
-function analysisAvgMetricAtAge(state, mix, testKey, age, metricKey) {
+function analysisAvgMetricAtAge(state, mix, testKey, age, metricKey, view) {
   const ageNum = Number(age);
   const specs = (state.results[mix]?.[testKey] || []).filter(s => Number(s.age) === ageNum && s.parsed && s.parsed.pmax > 0);
   if (!specs.length) return null;
-  const vals = specs.map(s => analysisSpecMetrics(s, testKey)?.[metricKey]).filter(v => v != null && !isNaN(v));
+  const vals = specs.map(s => analysisSpecMetrics(s, testKey, mix, view)?.[metricKey]).filter(v => v != null && !isNaN(v));
   if (!vals.length) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
 // ---------- Definición de variables de eje ----------
 const AXIS_VARS = [
-  { id: 'slope',   label: 'Pendiente inicial (kN/mm)',        group: 'mech' },
-  { id: 'pmaxKN',  label: 'Carga máxima (kN)',                group: 'mech' },
-  { id: 'pmaxMPa', label: 'Tensión máxima (MPa)',              group: 'mech' },
-  { id: 'defMax',  label: 'Deformación en carga máx. (mm)',    group: 'mech' },
-  { id: 'ratioKN',  label: 'Ratio carga máxima (kN)',          group: 'ratio', base: 'pmaxKN' },
-  { id: 'ratioMPa', label: 'Ratio tensión máxima (MPa)',       group: 'ratio', base: 'pmaxMPa' },
-  { id: 'design_BR',  label: 'Relación ligante — BR',                  group: 'design', key: 'BR' },
-  { id: 'design_FD',  label: 'Dosis total de fibra',                   group: 'design', key: 'FD' },
-  { id: 'design_SD',  label: 'Dosis fibra de acero',                   group: 'design', key: 'SD' },
-  { id: 'design_AD',  label: 'Dosis fibra amorfa',                     group: 'design', key: 'AD' },
-  { id: 'design_SL',  label: 'Largo fibra de acero (mm)',              group: 'design', key: 'SL' },
-  { id: 'design_AL',  label: 'Largo fibra amorfa (mm)',                group: 'design', key: 'AL' },
-  { id: 'design_T',   label: 'Temperatura (°C)',                       group: 'design', key: 'T' },
-  { id: 'design_TMF', label: 'Tamaño máx. de fibra (mm)',              group: 'design', key: 'TMF' },
+  { id: 'slope',   label: 'Pendiente inicial (kN/mm)',        en: 'Initial slope (kN/mm)',            group: 'mech' },
+  { id: 'pmaxKN',  label: 'Carga máxima (kN)',                en: 'Peak load (kN)',                   group: 'mech' },
+  { id: 'pmaxMPa', label: 'Tensión máxima (MPa)',              en: 'Peak stress (MPa)',                group: 'mech' },
+  { id: 'defMax',  label: 'Deformación en carga máx. (mm)',    en: 'Deflection at peak load (mm)',     group: 'mech' },
+  { id: 'fpKN',    label: 'Primer peak — carga (kN)',           en: 'First peak — load (kN)',           group: 'mech' },
+  { id: 'fpMPa',   label: 'Primer peak — tensión (MPa)',         en: 'First peak — stress (MPa)',        group: 'mech' },
+  { id: 'fpDef',   label: 'Primer peak — deflexión (mm)',        en: 'First peak — deflection (mm)',     group: 'mech' },
+  { id: 'ratioKN',  label: 'Ratio carga máxima (kN)',          en: 'Peak-load ratio (kN)',             group: 'ratio', base: 'pmaxKN' },
+  { id: 'ratioMPa', label: 'Ratio tensión máxima (MPa)',       en: 'Peak-stress ratio (MPa)',          group: 'ratio', base: 'pmaxMPa' },
+  { id: 'design_BR',  label: 'Relación ligante — BR',                  en: 'Binder ratio — BR',            group: 'design', key: 'BR' },
+  { id: 'design_FD',  label: 'Dosis total de fibra',                   en: 'Total fiber dosage',           group: 'design', key: 'FD' },
+  { id: 'design_SD',  label: 'Dosis fibra de acero',                   en: 'Steel fiber dosage',           group: 'design', key: 'SD' },
+  { id: 'design_AD',  label: 'Dosis fibra amorfa',                     en: 'Amorphous fiber dosage',       group: 'design', key: 'AD' },
+  { id: 'design_SL',  label: 'Largo fibra de acero (mm)',              en: 'Steel fiber length (mm)',      group: 'design', key: 'SL' },
+  { id: 'design_AL',  label: 'Largo fibra amorfa (mm)',                en: 'Amorphous fiber length (mm)',  group: 'design', key: 'AL' },
+  { id: 'design_T',   label: 'Temperatura (°C)',                       en: 'Temperature (°C)',             group: 'design', key: 'T' },
+  { id: 'design_TMF', label: 'Tamaño máx. de fibra (mm)',              en: 'Max fiber size (mm)',          group: 'design', key: 'TMF' },
 ];
 const GROUP_LABELS = { mech: 'Mecánico (siempre sobre curva corregida)', ratio: 'Ratio entre edades', design: 'Variables de mezcla' };
+const GROUP_LABELS_EN = { mech: 'Mechanical (always on corrected curve)', ratio: 'Ratio between ages', design: 'Mix variables' };
+function varLabelFor(v, lang) { return lang === 'en' && v.en ? v.en : v.label; }
 
 function keyOfItem(it) {
   if (it.kind === 'spec') return `${it.mix}_${it.testKey}_spec_${it.specimenId}`;
@@ -97,13 +118,13 @@ function defaultAnalysisLabel(it) {
 // propia del ítem y se usa el promedio de esa mezcla+ensayo a esa edad fija.
 // axisTestKey: para ítems de tipo 'mix' (un punto por mezcla), el ensayo (compresión/flexión)
 // se elige POR EJE — así se pueden mezclar ensayos entre el eje X y el eje Y para la misma mezcla.
-function evalAxisVar(varDef, item, state, ageOverride, axisTestKey) {
+function evalAxisVar(varDef, item, state, ageOverride, axisTestKey, view) {
   if (!varDef) return null;
   if (varDef.group === 'design') return window.getMixParam ? window.getMixParam(item.mix, varDef.key) : null;
   if (varDef.group === 'ratio') {
     if (item.kind !== 'ratio') return null;
-    const a = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageA, varDef.base);
-    const b = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageB, varDef.base);
+    const a = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageA, varDef.base, view);
+    const b = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageB, varDef.base, view);
     if (a == null || b == null || b === 0) return null;
     return a / b;
   }
@@ -112,19 +133,19 @@ function evalAxisVar(varDef, item, state, ageOverride, axisTestKey) {
     // Un punto por mezcla: siempre se usa el promedio de las probetas del ensayo elegido
     // para ESTE eje, a la edad fija del eje.
     if (!ageOverride || ageOverride === 'item') return null;
-    return analysisAvgMetricAtAge(state, item.mix, axisTestKey, ageOverride, varDef.id);
+    return analysisAvgMetricAtAge(state, item.mix, axisTestKey, ageOverride, varDef.id, view);
   }
   if (ageOverride && ageOverride !== 'item') {
-    return analysisAvgMetricAtAge(state, item.mix, item.testKey, ageOverride, varDef.id);
+    return analysisAvgMetricAtAge(state, item.mix, item.testKey, ageOverride, varDef.id, view);
   }
   if (item.kind === 'spec') {
     const spec = state.results[item.mix]?.[item.testKey]?.find(s => s.id === item.specimenId);
     if (!spec) return null;
-    const m = analysisSpecMetrics(spec, item.testKey);
+    const m = analysisSpecMetrics(spec, item.testKey, item.mix, view);
     return m ? m[varDef.id] : null;
   }
   if (item.kind === 'avg') {
-    return analysisAvgMetricAtAge(state, item.mix, item.testKey, item.age, varDef.id);
+    return analysisAvgMetricAtAge(state, item.mix, item.testKey, item.age, varDef.id, view);
   }
   if (item.kind === 'ratio') {
     // Sin ageOverride, una variable mecánica no aplica a un ítem de tipo ratio.
@@ -156,8 +177,9 @@ function niceTicksAnalysis(mn, mx, count = 5) {
 }
 
 // ---------- Gráfico de dispersión (scatter) ----------
-function ScatterPlot({ points, xLabel, yLabel, width = 780, height = 460, viewBox = null, onZoom = null }) {
-  const W = width, H = height, padL = 66, padR = 20, padT = 20, padB = 48;
+function ScatterPlot({ points, xLabel, yLabel, width = 780, height = 460, viewBox = null, onZoom = null, tickFont = 11, axisLabelFont = 12, axisGap = 0, legend = null }) {
+  const W = width, H = height;
+  const padL = 46 + axisLabelFont + axisGap, padR = 20, padT = 20, padB = tickFont + axisLabelFont + axisGap + 22;
   const [drag, setDrag] = React.useState(null);
   const [hover, setHover] = React.useState(null);
   const svgRef = React.useRef(null);
@@ -224,11 +246,11 @@ function ScatterPlot({ points, xLabel, yLabel, width = 780, height = 460, viewBo
       {yTicks.map(t => <line key={'gy' + t} x1={padL} y1={sy(t)} x2={W - padR} y2={sy(t)} stroke="#eef0f3" strokeWidth="1" />)}
       <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} stroke="#666" strokeWidth="1" />
       <line x1={padL} y1={padT} x2={padL} y2={H - padB} stroke="#666" strokeWidth="1" />
-      {xTicks.map(t => <text key={'lx' + t} x={sx(t)} y={H - padB + 16} textAnchor="middle" fontSize="11" fill="#555" fontFamily="ui-monospace, monospace">{fmtAxisNum(t)}</text>)}
-      {yTicks.map(t => <text key={'ly' + t} x={padL - 8} y={sy(t) + 4} textAnchor="end" fontSize="11" fill="#555" fontFamily="ui-monospace, monospace">{fmtAxisNum(t)}</text>)}
-      <text x={(W + padL) / 2} y={H - 8} textAnchor="middle" fontSize="12" fill="#333">{xLabel}</text>
-      <text x={16} y={(H - padB + padT) / 2} textAnchor="middle" fontSize="12" fill="#333"
-            transform={`rotate(-90 16 ${(H - padB + padT) / 2})`}>{yLabel}</text>
+      {xTicks.map(t => <text key={'lx' + t} x={sx(t)} y={H - padB + tickFont + 6} textAnchor="middle" fontSize={tickFont} fill="#555" fontFamily="ui-monospace, monospace">{fmtAxisNum(t)}</text>)}
+      {yTicks.map(t => <text key={'ly' + t} x={padL - 8} y={sy(t) + tickFont / 3} textAnchor="end" fontSize={tickFont} fill="#555" fontFamily="ui-monospace, monospace">{fmtAxisNum(t)}</text>)}
+      <text x={(W + padL) / 2} y={H - 8} textAnchor="middle" fontSize={axisLabelFont} fill="#333">{xLabel}</text>
+      <text x={14 + axisLabelFont * 0.4} y={(H - padB + padT) / 2} textAnchor="middle" fontSize={axisLabelFont} fill="#333"
+            transform={`rotate(-90 ${14 + axisLabelFont * 0.4} ${(H - padB + padT) / 2})`}>{yLabel}</text>
       {valid.map((p, i) => (
         <circle key={p.key || i} cx={sx(p.x)} cy={sy(p.y)} r={5.5} fill={p.color} stroke="white" strokeWidth="1.3"
                 onMouseMove={(e) => { if (drag) return; const c = svgCoords(e); setHover({ x: c.x, y: c.y, label: p.label, color: p.color, xv: p.x, yv: p.y }); }}
@@ -253,6 +275,7 @@ function ScatterPlot({ points, xLabel, yLabel, width = 780, height = 460, viewBo
           </g>
         );
       })()}
+      {legend && window.DraggableLegend && <window.DraggableLegend items={legend.items} pos={legend.pos} onMove={legend.onMove} W={W} H={H} fontSize={legend.fontSize || 12} title={legend.title} />}
     </svg>
   );
 }
@@ -304,8 +327,9 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
     return m;
   }, [user]);
   const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
-  const hasParamFilters = Object.values(paramFilters).some(v => v && v !== 'all');
   const allMixes = [...new Set(items.map(i => i.mix))].sort((a, b) => a - b);
+  const tmfValues = React.useMemo(() => [...new Set(allMixes.map(m => window.getMixParam(m, 'TMF')).filter(v => v != null))].sort((a, b) => a - b), [allMixes]);
+  const hasParamFilters = Object.values(paramFilters).some(v => v && v !== 'all');
   const allAges = [...new Set(items.filter(i => i.kind !== 'ratio').map(i => i.age))].sort((a, b) => a - b);
 
   const filtered = items.filter(it => {
@@ -324,6 +348,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
         const want = paramFilters[f];
         if (want && want !== 'all') { if (!d || d[f] !== want) return false; }
       }
+      if (paramFilters.TMF && paramFilters.TMF !== 'all' && String(window.getMixParam(it.mix, 'TMF')) !== paramFilters.TMF) return false;
     }
     if (text) {
       const s = `N${it.mix} ${it.testKey} ${it.specimenId || ''} ${it.age || ''} ${it.kind === 'ratio' ? it.ageA + 'v' + it.ageB : ''}`.toLowerCase();
@@ -402,6 +427,15 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
                 </select>
               </div>
             ))}
+            {tmfValues.length > 0 && (
+              <div className="picker-param">
+                <span title="Tamaño máx. de fibra = max(largo acero, largo amorfa)">TMF</span>
+                <select value={paramFilters.TMF || 'all'} onChange={(e) => setParamFilters(p => ({ ...p, TMF: e.target.value }))}>
+                  <option value="all">—</option>
+                  {tmfValues.map(v => <option key={v} value={String(v)}>{v} mm</option>)}
+                </select>
+              </div>
+            )}
             {hasParamFilters && (
               <button className="vt-btn" style={{ fontSize: 10, padding: '2px 8px' }} onClick={() => setParamFilters({})}>✕ Limpiar</button>
             )}
@@ -449,6 +483,7 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
     return m;
   }, [user]);
   const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
+  const tmfValues = React.useMemo(() => [...new Set(mixes.map(({ mix }) => window.getMixParam(mix, 'TMF')).filter(v => v != null))].sort((a, b) => a - b), [mixes]);
   const hasParamFilters = Object.values(paramFilters).some(v => v && v !== 'all');
 
   const filtered = mixes.filter(({ mix }) => {
@@ -458,6 +493,7 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
         const want = paramFilters[f];
         if (want && want !== 'all') { if (!d || d[f] !== want) return false; }
       }
+      if (paramFilters.TMF && paramFilters.TMF !== 'all' && String(window.getMixParam(mix, 'TMF')) !== paramFilters.TMF) return false;
     }
     if (text && !`N${mix}`.toLowerCase().includes(text.toLowerCase())) return false;
     return true;
@@ -503,6 +539,15 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
                 </select>
               </div>
             ))}
+            {tmfValues.length > 0 && (
+              <div className="picker-param">
+                <span title="Tamaño máx. de fibra = max(largo acero, largo amorfa)">TMF</span>
+                <select value={paramFilters.TMF || 'all'} onChange={(e) => setParamFilters(p => ({ ...p, TMF: e.target.value }))}>
+                  <option value="all">—</option>
+                  {tmfValues.map(v => <option key={v} value={String(v)}>{v} mm</option>)}
+                </select>
+              </div>
+            )}
             {hasParamFilters && (
               <button className="vt-btn" style={{ fontSize: 10, padding: '2px 8px' }} onClick={() => setParamFilters({})}>✕ Limpiar</button>
             )}
@@ -543,6 +588,11 @@ function AnalysisTab({ state, user, T, lang }) {
   const [colorMap, setColorMap] = React.useState({});
   const [nameMap, setNameMap] = React.useState({});
   const [colorBy, setColorBy] = React.useState('none');
+  const [chartFont, setChartFont] = React.useState({ tick: 11, axis: 12, legend: 12, gap: 0 });
+  const [legendPos, setLegendPos] = React.useState(null);
+  const [colorByColor, setColorByColor] = React.useState({}); // override de color por nivel/valor: `${colorBy}:${k}`
+  const [colorByName, setColorByName] = React.useState({});   // override de nombre por nivel/valor
+  const [viewState, setViewState] = React.useState('corrected'); // 'pure' | 'processed' | 'corrected'
   const [zoomViewBox, setZoomViewBox] = React.useState(null);
   const [axisMode, setAxisMode] = React.useState('auto');
   const [manualAxis, setManualAxis] = React.useState({ xMin: 0, xMax: 1, yMin: 0, yMax: 1 });
@@ -559,9 +609,26 @@ function AnalysisTab({ state, user, T, lang }) {
     return m;
   }, [user]);
   const hasFactorLevels = user.hasFactorial && designByRun[1] && designByRun[1].BR;
-  const COLOR_FACTORS = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
+  const COLOR_FACTORS = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T', 'TMF'];
+  const TMF_PALETTE = ['#2166ac', '#b2182b', '#1b7837', '#f1a340', '#762a83', '#01665e'];
+  const tmfColorMap = React.useMemo(() => {
+    const vals = [...new Set((selected || []).map(s => window.getMixParam(s.mix, 'TMF')).filter(v => v != null))].sort((a, b) => a - b);
+    const m = {}; vals.forEach((v, i) => { m[v] = TMF_PALETTE[i % TMF_PALETTE.length]; });
+    return m;
+  }, [selected]);
   const LEVEL_COLOR = { '-': '#2166ac', '0': '#7f7f7f', '+': '#b2182b' };
   const LEVEL_NAME = { '-': (T.low || 'Bajo (−1)'), '0': (T.center || 'Centro (0)'), '+': (T.high || 'Alto (+1)') };
+
+  // Ítems de la leyenda de color (nivel/valor) con su color y nombre por defecto,
+  // aplicando overrides editables del usuario (colorByColor / colorByName).
+  const colorByItems = React.useMemo(() => {
+    if (colorBy === 'none') return [];
+    if (colorBy === 'TMF') return Object.keys(tmfColorMap).map(v => ({ k: v, defColor: tmfColorMap[v], defName: `TMF ${v} mm` }));
+    return ['-', '0', '+'].map(lv => ({ k: lv, defColor: LEVEL_COLOR[lv], defName: `${colorBy} ${LEVEL_NAME[lv]}` }));
+  }, [colorBy, tmfColorMap]);
+  const effColor = (k, def) => colorByColor[`${colorBy}:${k}`] || def;
+  const effName = (k, def) => (colorByName[`${colorBy}:${k}`] != null && colorByName[`${colorBy}:${k}`] !== '') ? colorByName[`${colorBy}:${k}`] : def;
+  const legendItems = colorByItems.map(it => ({ label: effName(it.k, it.defName), color: effColor(it.k, it.defColor) }));
 
   const addMany = (items) => {
     setSelected(prev => {
@@ -590,12 +657,15 @@ function AnalysisTab({ state, user, T, lang }) {
   const removeItem = (key) => setSelected(s => s.filter(x => x.key !== key));
 
   const points = selected.map((s, i) => {
-    const x = evalAxisVar(xVar, s, state, xVar.group === 'mech' ? xAge : null, xTest);
-    const y = evalAxisVar(yVar, s, state, yVar.group === 'mech' ? yAge : null, yTest);
+    const x = evalAxisVar(xVar, s, state, xVar.group === 'mech' ? xAge : null, xTest, viewState);
+    const y = evalAxisVar(yVar, s, state, yVar.group === 'mech' ? yAge : null, yTest, viewState);
     let color = colorMap[s.key] || ANALYSIS_PALETTE[i % ANALYSIS_PALETTE.length];
-    if (colorBy !== 'none') {
+    if (colorBy === 'TMF') {
+      const tv = window.getMixParam(s.mix, 'TMF');
+      if (tv != null && tmfColorMap[tv]) color = effColor(tv, tmfColorMap[tv]);
+    } else if (colorBy !== 'none') {
       const d = designByRun[s.mix];
-      if (d && d[colorBy] != null && LEVEL_COLOR[d[colorBy]]) color = LEVEL_COLOR[d[colorBy]];
+      if (d && d[colorBy] != null && LEVEL_COLOR[d[colorBy]]) color = effColor(d[colorBy], LEVEL_COLOR[d[colorBy]]);
     }
     return { key: s.key, x, y, color, label: nameMap[s.key] || defaultAnalysisLabel(s), visible: visibleMap[s.key] !== false };
   });
@@ -619,11 +689,12 @@ function AnalysisTab({ state, user, T, lang }) {
     : zoomViewBox;
 
   const axisFullLabel = (v, age, test) => {
-    if (v.group !== 'mech') return v.label;
+    const base = varLabelFor(v, lang);
+    if (v.group !== 'mech') return base;
     const testLabel = user.hasFlexion ? (test === 'flexion' ? (T.flexion || 'Flexión') : (T.compression || 'Compresión')) : '';
     const ageLabel = age && age !== 'item' ? `${age}d` : '';
     const suffix = [testLabel, ageLabel].filter(Boolean).join(', ');
-    return suffix ? `${v.label} — ${suffix}` : v.label;
+    return suffix ? `${base} — ${suffix}` : base;
   };
 
   const exportCSV = () => {
@@ -658,8 +729,8 @@ function AnalysisTab({ state, user, T, lang }) {
         const opts = availableVars.filter(v => v.group === g);
         if (!opts.length) return null;
         return (
-          <optgroup key={g} label={GROUP_LABELS[g]}>
-            {opts.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+          <optgroup key={g} label={(lang === 'en' ? GROUP_LABELS_EN : GROUP_LABELS)[g]}>
+            {opts.map(v => <option key={v.id} value={v.id}>{varLabelFor(v, lang)}</option>)}
           </optgroup>
         );
       })}
@@ -731,6 +802,14 @@ function AnalysisTab({ state, user, T, lang }) {
           {renderAgeSelect(yVar, yAge, setYAge)}
         </div>
         <div className="vt-group">
+          <span className="vt-label">{T.stateLabel || 'Estado'}</span>
+          <div className="unit-toggle">
+            <button className={viewState === 'pure' ? 'active' : ''} onClick={() => setViewState('pure')}>{T.statePure || 'Puro'}</button>
+            <button className={viewState === 'processed' ? 'active' : ''} onClick={() => setViewState('processed')}>{T.stateProcessed || 'Procesado'}</button>
+            <button className={viewState === 'corrected' ? 'active' : ''} onClick={() => setViewState('corrected')}>{T.stateCorrected || 'Corregido'}</button>
+          </div>
+        </div>
+        <div className="vt-group">
           <span className="vt-label">{T.axisLabel || 'Ejes'}</span>
           <div className="unit-toggle">
             <button className={axisMode === 'auto' ? 'active' : ''} onClick={() => { setAxisMode('auto'); }}>{T.axisAuto || 'Auto'}</button>
@@ -747,6 +826,21 @@ function AnalysisTab({ state, user, T, lang }) {
             </div>
           )}
         </div>
+        <div className="vt-group">
+          <span className="vt-label">{T.fontSizes || 'Tamaño de letra'}</span>
+          <div className="font-inputs">
+            <label>{T.fontTitles || 'Títulos'}<input type="number" min="6" max="40" value={chartFont.axis} onChange={(e) => setChartFont(f => ({ ...f, axis: +e.target.value || 12 }))} /></label>
+            <label>{T.fontAxes || 'Ejes'}<input type="number" min="6" max="40" value={chartFont.tick} onChange={(e) => setChartFont(f => ({ ...f, tick: +e.target.value || 11 }))} /></label>
+            <label>{T.fontLegend || 'Leyenda'}<input type="number" min="6" max="40" value={chartFont.legend} onChange={(e) => setChartFont(f => ({ ...f, legend: +e.target.value || 12 }))} /></label>
+          </div>
+        </div>
+        <div className="vt-group">
+          <span className="vt-label">{T.axisGap || 'Separación núm.–eje'}</span>
+          <div className="font-inputs">
+            <input type="range" min="0" max="60" step="2" value={chartFont.gap} onChange={(e) => setChartFont(f => ({ ...f, gap: +e.target.value }))} style={{ width: 120 }} />
+            <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 34 }}>{chartFont.gap}px</span>
+          </div>
+        </div>
       </div>
 
       {hasFactorLevels && (
@@ -759,10 +853,13 @@ function AnalysisTab({ state, user, T, lang }) {
             </select>
             {colorBy !== 'none' && (
               <div className="enc-legend">
-                {['-', '0', '+'].map(lv => (
-                  <span key={lv} className="enc-item">
-                    <span className="swatch" style={{ background: LEVEL_COLOR[lv] }}></span>
-                    {colorBy} {LEVEL_NAME[lv]}
+                {colorByItems.map(it => (
+                  <span key={it.k} className="enc-item">
+                    <input type="color" className="enc-color" value={effColor(it.k, it.defColor)}
+                           title={T.editColor || 'Editar color'}
+                           onChange={(e) => setColorByColor(m => ({ ...m, [`${colorBy}:${it.k}`]: e.target.value }))} />
+                    <input className="leg-name" style={{ width: 120 }} value={effName(it.k, it.defName)}
+                           onChange={(e) => setColorByName(m => ({ ...m, [`${colorBy}:${it.k}`]: e.target.value }))} />
                   </span>
                 ))}
               </div>
@@ -785,6 +882,8 @@ function AnalysisTab({ state, user, T, lang }) {
             yLabel={axisFullLabel(yVar, yAge, yTest)}
             width={640} height={640}
             viewBox={effectiveViewBox}
+            tickFont={chartFont.tick} axisLabelFont={chartFont.axis} axisGap={chartFont.gap}
+            legend={legendItems.length ? { items: legendItems, pos: legendPos, onMove: setLegendPos, fontSize: chartFont.legend } : null}
             onZoom={axisMode === 'manual' ? null : ((box) => setZoomViewBox(box))}
           />
           <div className="viewer-hint" style={{ margin: 8 }}>

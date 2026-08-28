@@ -24,8 +24,12 @@
     { id: 'pmax', label: 'P máx (kN)', get: (m) => r3(m.pmaxKN) },
     { id: 'sigma', label: 'σ máx (MPa)', get: (m) => r2(m.sigmaMPa) },
     { id: 'disp', label: 'Desplaz./Deflexión máx (mm)', get: (m) => r3(m.dispAtMax) },
+    { id: 'dispCorr', label: 'Deflexión en carga máx corregida (mm)', flexOnly: true, get: (m) => r3(m.dispAtMaxCorr) },
     { id: 'strain', label: 'Deformación unitaria máx (mm/mm)', compOnly: true, get: (m) => r3(m.strainUnit) },
     { id: 'slope', label: 'Pendiente recta de corrección (kN/mm)', get: (m) => r3(m.correctionSlope) },
+    { id: 'fpLoad', label: 'Primer peak P (kN)', flexOnly: true, get: (m) => r3(m.firstPeakKN) },
+    { id: 'fpSigma', label: 'Primer peak σ (MPa)', flexOnly: true, get: (m) => r2(m.firstPeakSigma) },
+    { id: 'fpDisp', label: 'Primer peak deflexión (mm)', flexOnly: true, get: (m) => r3(m.firstPeakDisp) },
     { id: 'brittle', label: 'Falla frágil', get: (m) => m.brittle ? 'Sí' : 'No' },
     { id: 'length', label: 'Largo (mm)', fromSpec: (sp) => r2(parseFloat(sp.length)) },
     { id: 'height', label: 'Alto (mm)', fromSpec: (sp) => r2(parseFloat(sp.height)) },
@@ -70,7 +74,7 @@
   }
 
   // Extrae métricas de una probeta mecánica procesada.
-  function specMetrics(spec, testKey) {
+  function specMetrics(spec, testKey, mix) {
     const p = processMech(spec);
     if (!p || !p.points || !p.points.length || !(p.pmax > 0)) return null;
     let idx = 0, mv = -Infinity;
@@ -81,9 +85,26 @@
     const br = detectBrittle(p.points, idx, pmaxKN);
     const h = parseFloat(spec.height);
     const strainUnit = (testKey === 'compression' && h > 0 && pk.disp != null) ? pk.disp / h : null;
+    let firstPeakKN = null, firstPeakSigma = null, firstPeakDisp = null, dispAtMaxCorr = null;
+    if (testKey === 'flexion') {
+      const fp = window.applyFirstPeakCorrection(p, { mix: mix != null ? mix : spec.mix, age: spec.age });
+      if (fp) {
+        firstPeakKN = fp.firstPeakLoad;
+        firstPeakDisp = fp.firstPeakDisp;
+        firstPeakSigma = window.computeStressMPa(firstPeakKN, testKey, spec);
+      }
+      // Deflexión en carga máxima sobre la curva CORREGIDA (o recortada a 0.5 mm tras el máx si no aplica el primer peak).
+      const corr = fp || window.truncateAtMax(p);
+      if (corr && corr.points && corr.points.length) {
+        let ci = 0, cv = -Infinity;
+        corr.points.forEach((pt, i) => { if (pt.load > cv) { cv = pt.load; ci = i; } });
+        dispAtMaxCorr = corr.points[ci] ? corr.points[ci].disp : null;
+      }
+    }
     return {
-      pmaxKN, sigmaMPa: sigma, strainUnit, dispAtMax: pk.disp,
+      pmaxKN, sigmaMPa: sigma, strainUnit, dispAtMax: pk.disp, dispAtMaxCorr,
       brittle: br.brittle, correctionSlope: correctionSlope(spec),
+      firstPeakKN, firstPeakSigma, firstPeakDisp,
     };
   }
 
@@ -117,7 +138,7 @@
   // Metadatos de columnas (edades/slots activos) para un ensayo, según la mezcla de referencia.
   function testMeta(user, refMix, testKey, fields) {
     const activeFields = window.EXPORT_FIELDS.filter(f =>
-      fields[f.id] && !(f.compOnly && testKey !== 'compression'));
+      fields[f.id] && !(f.compOnly && testKey !== 'compression') && !(f.flexOnly && testKey !== 'flexion'));
     const defByAgeRef = {};
     specsDef(user, refMix, testKey).forEach(s => { (defByAgeRef[s.age] = defByAgeRef[s.age] || []).push(s.id); });
     const ageList = Object.keys(defByAgeRef).map(Number).sort((a, b) => a - b);
@@ -151,7 +172,7 @@
         for (let slot = 0; slot < meta.slotsPerAge; slot++) {
           const id = defByAge[age][r * meta.slotsPerAge + slot];
           const spec = id ? loaded[id] : null;
-          const m = spec ? specMetrics(spec, testKey) : null;
+          const m = spec ? specMetrics(spec, testKey, mix) : null;
           meta.activeFields.forEach(f => {
             if (f.fromSpec) { row.push(spec ? f.fromSpec(spec) : ''); }
             else { row.push(m ? f.get(m) : ''); }

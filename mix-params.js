@@ -1,9 +1,8 @@
-// Parámetros de mezcla (variables de diseño) para Rodrigo — extraídos de
-// "caracteriticas.xlsx". Estos valores son constantes por mezcla (no dependen
-// de ensayo/probeta/edad) y se usan como variables de eje en la pestaña Análisis.
+// Parámetros de mezcla (variables de diseño) para Rodrigo — actualizados desde
+// "infoactu.xlsx". Constantes por mezcla, usadas como variables de eje en Análisis
+// y como columnas de características en la exportación a Excel.
 //
-// Columnas:
-//   BR  = relación de ligante (fracción)
+//   BR  = reemplazo de ligante/cemento (fracción)
 //   FD  = dosis total de fibra (fracción volumétrica) = SD + AD
 //   SD  = dosis de fibra de acero (fracción volumétrica)
 //   AD  = dosis de fibra amorfa (fracción volumétrica)
@@ -11,55 +10,64 @@
 //   AL  = largo de fibra amorfa (mm)
 //   T   = temperatura (°C)
 //   TMF = tamaño máximo de fibra (mm) = max(SL, AL)
-//   tempCat = categoría cualitativa de temperatura (frio/neutro/caliente), informativa
+//   tempCat = categoría cualitativa de temperatura (frio/neutro/caliente)
 
-window.MIX_PARAMS = {
-  1:  { tempCat:'frio',     BR:0.3,  FD:0.005,  SD:0.00375, AD:0.00125, SL:6,  AL:5,  T:10, TMF:6  },
-  2:  { tempCat:'caliente', BR:0,    FD:0.005,  SD:0.00375, AD:0.00125, SL:6,  AL:5,  T:30, TMF:6  },
-  3:  { tempCat:'caliente', BR:0.3,  FD:0.005,  SD:0.00125, AD:0.00375, SL:6,  AL:5,  T:30, TMF:6  },
-  4:  { tempCat:'frio',     BR:0,    FD:0.005,  SD:0.00125, AD:0.00375, SL:6,  AL:5,  T:10, TMF:6  },
-  5:  { tempCat:'caliente', BR:0.3,  FD:0.0075, SD:0.005625,AD:0.001875,SL:6,  AL:5,  T:30, TMF:6  },
-  6:  { tempCat:'frio',     BR:0,    FD:0.0075, SD:0.005625,AD:0.001875,SL:6,  AL:5,  T:10, TMF:6  },
-  7:  { tempCat:'frio',     BR:0.3,  FD:0.0075, SD:0.001875,AD:0.005625,SL:6,  AL:5,  T:10, TMF:6  },
-  8:  { tempCat:'caliente', BR:0,    FD:0.0075, SD:0.001875,AD:0.005625,SL:6,  AL:5,  T:30, TMF:6  },
-  9:  { tempCat:'caliente', BR:0.3,  FD:0.005,  SD:0.00375, AD:0.00125, SL:20, AL:5,  T:30, TMF:20 },
-  10: { tempCat:'frio',     BR:0,    FD:0.005,  SD:0.00375, AD:0.00125, SL:20, AL:5,  T:10, TMF:20 },
-  11: { tempCat:'frio',     BR:0.3,  FD:0.005,  SD:0.00125, AD:0.00375, SL:20, AL:5,  T:10, TMF:20 },
-  12: { tempCat:'caliente', BR:0,    FD:0.005,  SD:0.00125, AD:0.00375, SL:20, AL:5,  T:30, TMF:20 },
-  13: { tempCat:'frio',     BR:0.3,  FD:0.0075, SD:0.005625,AD:0.001875,SL:20, AL:5,  T:10, TMF:20 },
-  14: { tempCat:'caliente', BR:0,    FD:0.0075, SD:0.005625,AD:0.001875,SL:20, AL:5,  T:30, TMF:20 },
-  15: { tempCat:'caliente', BR:0.3,  FD:0.0075, SD:0.001875,AD:0.005625,SL:20, AL:5,  T:30, TMF:20 },
-  16: { tempCat:'frio',     BR:0,    FD:0.0075, SD:0.001875,AD:0.005625,SL:20, AL:5,  T:10, TMF:20 },
-  17: { tempCat:'caliente', BR:0.3,  FD:0.005,  SD:0.00375, AD:0.00125, SL:6,  AL:20, T:30, TMF:20 },
-  18: { tempCat:'frio',     BR:0,    FD:0.005,  SD:0.00375, AD:0.00125, SL:6,  AL:20, T:10, TMF:20 },
-  19: { tempCat:'frio',     BR:0.3,  FD:0.005,  SD:0.00125, AD:0.00375, SL:6,  AL:20, T:10, TMF:20 },
-  20: { tempCat:'caliente', BR:0,    FD:0.005,  SD:0.00125, AD:0.00375, SL:6,  AL:20, T:30, TMF:20 },
-  21: { tempCat:'frio',     BR:0.3,  FD:0.0075, SD:0.005625,AD:0.001875,SL:6,  AL:20, T:10, TMF:20 },
-  22: { tempCat:'caliente', BR:0,    FD:0.0075, SD:0.005625,AD:0.001875,SL:6,  AL:20, T:30, TMF:20 },
-  23: { tempCat:'caliente', BR:0.3,  FD:0.0075, SD:0.001875,AD:0.005625,SL:6,  AL:20, T:30, TMF:20 },
-  24: { tempCat:'frio',     BR:0,    FD:0.0075, SD:0.001875,AD:0.005625,SL:6,  AL:20, T:10, TMF:20 },
-  25: { tempCat:'frio',     BR:0.3,  FD:0.005,  SD:0.00375, AD:0.00125, SL:20, AL:20, T:10, TMF:20 },
-  26: { tempCat:'caliente', BR:0,    FD:0.005,  SD:0.00375, AD:0.00125, SL:20, AL:20, T:30, TMF:20 },
-  27: { tempCat:'caliente', BR:0.3,  FD:0.005,  SD:0.00125, AD:0.00375, SL:20, AL:20, T:30, TMF:20 },
-  28: { tempCat:'frio',     BR:0,    FD:0.005,  SD:0.00125, AD:0.00375, SL:20, AL:20, T:10, TMF:20 },
-  29: { tempCat:'caliente', BR:0.3,  FD:0.0075, SD:0.005625,AD:0.001875,SL:20, AL:20, T:30, TMF:20 },
-  30: { tempCat:'frio',     BR:0,    FD:0.0075, SD:0.005625,AD:0.001875,SL:20, AL:20, T:10, TMF:20 },
-  31: { tempCat:'frio',     BR:0.3,  FD:0.0075, SD:0.001875,AD:0.005625,SL:20, AL:20, T:10, TMF:20 },
-  32: { tempCat:'caliente', BR:0,    FD:0.0075, SD:0.001875,AD:0.005625,SL:20, AL:20, T:30, TMF:20 },
-  33: { tempCat:'neutro',   BR:0.3,  FD:0.01,   SD:0.005,   AD:0.005,   SL:13, AL:15, T:20, TMF:15 },
-  34: { tempCat:'neutro',   BR:0,    FD:0.01,   SD:0.005,   AD:0.005,   SL:13, AL:15, T:20, TMF:15 },
-  35: { tempCat:'neutro',   BR:0.15, FD:0.01,   SD:0.0075,  AD:0.0025,  SL:13, AL:15, T:20, TMF:15 },
-  36: { tempCat:'neutro',   BR:0.15, FD:0.01,   SD:0.0025,  AD:0.0075,  SL:13, AL:15, T:20, TMF:15 },
-  37: { tempCat:'neutro',   BR:0.15, FD:0.005,  SD:0.0025,  AD:0.0025,  SL:13, AL:15, T:20, TMF:15 },
-  38: { tempCat:'neutro',   BR:0.15, FD:0.0075, SD:0.00375, AD:0.00375, SL:13, AL:15, T:20, TMF:15 },
-  39: { tempCat:'neutro',   BR:0.15, FD:0.01,   SD:0.005,   AD:0.005,   SL:6,  AL:15, T:20, TMF:15 },
-  40: { tempCat:'neutro',   BR:0.15, FD:0.01,   SD:0.005,   AD:0.005,   SL:20, AL:15, T:20, TMF:20 },
-  41: { tempCat:'neutro',   BR:0.15, FD:0.01,   SD:0.005,   AD:0.005,   SL:13, AL:5,  T:20, TMF:13 },
-  42: { tempCat:'neutro',   BR:0.15, FD:0.01,   SD:0.005,   AD:0.005,   SL:13, AL:20, T:20, TMF:20 },
-  43: { tempCat:'frio',     BR:0.15, FD:0.01,   SD:0.005,   AD:0.005,   SL:13, AL:15, T:10, TMF:15 },
-  44: { tempCat:'caliente', BR:0.15, FD:0.01,   SD:0.005,   AD:0.005,   SL:13, AL:15, T:30, TMF:15 },
-  45: { tempCat:'neutro',   BR:0.15, FD:0.01,   SD:0.005,   AD:0.005,   SL:13, AL:15, T:20, TMF:15 },
-};
+window.MIX_PARAMS = (function () {
+  // [tempCat, BR, FD, SD, AD, SL, AL, T]
+  const rows = {
+    1:  ['frio',     0.3,  0.005,  0.00375,  0.00125,  6,  5,  10],
+    2:  ['caliente', 0,    0.005,  0.00375,  0.00125,  6,  5,  30],
+    3:  ['caliente', 0.3,  0.005,  0.00125,  0.00375,  6,  5,  30],
+    4:  ['frio',     0,    0.005,  0.00125,  0.00375,  6,  5,  10],
+    5:  ['caliente', 0.3,  0.01,   0.0075,   0.0025,   6,  5,  30],
+    6:  ['frio',     0,    0.01,   0.0075,   0.0025,   6,  5,  10],
+    7:  ['frio',     0.3,  0.01,   0.0025,   0.0075,   6,  5,  10],
+    8:  ['caliente', 0,    0.01,   0.0025,   0.0075,   6,  5,  30],
+    9:  ['caliente', 0.3,  0.005,  0.00375,  0.00125,  20, 5,  30],
+    10: ['frio',     0,    0.005,  0.00375,  0.00125,  20, 5,  10],
+    11: ['frio',     0.3,  0.005,  0.00125,  0.00375,  20, 5,  10],
+    12: ['caliente', 0,    0.005,  0.00125,  0.00375,  20, 5,  30],
+    13: ['frio',     0.3,  0.01,   0.0075,   0.0025,   20, 5,  10],
+    14: ['caliente', 0,    0.01,   0.0075,   0.0025,   20, 5,  30],
+    15: ['caliente', 0.3,  0.01,   0.0025,   0.0075,   20, 5,  30],
+    16: ['frio',     0,    0.01,   0.0025,   0.0075,   20, 5,  10],
+    17: ['caliente', 0.3,  0.005,  0.00375,  0.00125,  6,  20, 30],
+    18: ['frio',     0,    0.005,  0.00375,  0.00125,  6,  20, 10],
+    19: ['frio',     0.3,  0.005,  0.00125,  0.00375,  6,  20, 10],
+    20: ['caliente', 0,    0.005,  0.00125,  0.00375,  6,  20, 30],
+    21: ['frio',     0.3,  0.01,   0.0075,   0.0025,   6,  20, 10],
+    22: ['caliente', 0,    0.01,   0.0075,   0.0025,   6,  20, 30],
+    23: ['caliente', 0.3,  0.01,   0.0025,   0.0075,   6,  20, 30],
+    24: ['frio',     0,    0.01,   0.0025,   0.0075,   6,  20, 10],
+    25: ['frio',     0.3,  0.005,  0.00375,  0.00125,  20, 20, 10],
+    26: ['caliente', 0,    0.005,  0.00375,  0.00125,  20, 20, 30],
+    27: ['caliente', 0.3,  0.005,  0.00125,  0.00375,  20, 20, 30],
+    28: ['frio',     0,    0.005,  0.00125,  0.00375,  20, 20, 10],
+    29: ['caliente', 0.3,  0.01,   0.0075,   0.0025,   20, 20, 30],
+    30: ['frio',     0,    0.01,   0.0075,   0.0025,   20, 20, 10],
+    31: ['frio',     0.3,  0.01,   0.0025,   0.0075,   20, 20, 10],
+    32: ['caliente', 0,    0.01,   0.0025,   0.0075,   20, 20, 30],
+    33: ['neutro',   0.3,  0.0075, 0.00375,  0.00375,  13, 15, 20],
+    34: ['neutro',   0,    0.0075, 0.00375,  0.00375,  13, 15, 20],
+    35: ['neutro',   0.15, 0.0075, 0.005625, 0.001875, 13, 15, 20],
+    36: ['neutro',   0.15, 0.0075, 0.001875, 0.005625, 13, 15, 20],
+    37: ['neutro',   0.15, 0.005,  0.0025,   0.0025,   13, 15, 20],
+    38: ['neutro',   0.15, 0.01,   0.005,    0.005,    13, 15, 20],
+    39: ['neutro',   0.15, 0.0075, 0.00375,  0.00375,  6,  15, 20],
+    40: ['neutro',   0.15, 0.0075, 0.00375,  0.00375,  20, 15, 20],
+    41: ['neutro',   0.15, 0.0075, 0.00375,  0.00375,  13, 5,  20],
+    42: ['neutro',   0.15, 0.0075, 0.00375,  0.00375,  13, 20, 20],
+    43: ['frio',     0.15, 0.0075, 0.00375,  0.00375,  13, 15, 10],
+    44: ['caliente', 0.15, 0.0075, 0.00375,  0.00375,  13, 15, 30],
+    45: ['neutro',   0.15, 0.0075, 0.00375,  0.00375,  13, 15, 20],
+  };
+  const out = {};
+  Object.entries(rows).forEach(([mix, r]) => {
+    const [tempCat, BR, FD, SD, AD, SL, AL, T] = r;
+    out[mix] = { tempCat, BR, FD, SD, AD, SL, AL, T, TMF: Math.max(SL, AL) };
+  });
+  return out;
+})();
 
 window.getMixParam = function(mix, key) {
   const p = window.MIX_PARAMS && window.MIX_PARAMS[mix];
