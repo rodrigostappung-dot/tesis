@@ -924,7 +924,7 @@ function ComparatorView({ state, T, lang }) {
         let key;
         if (it.kind === 'shrink') key = `${it.mix}_retraction_${it.specimenId}`;
         else if (it.kind === 'shrinkMix') key = `${it.mix}_retraction_mix`;
-        else if (it.kind === 'mechAvg') key = `${it.mix}_${it.testKey}_avg_${it.age}`;
+        else if (it.kind === 'mechAvg') key = `${it.mix}_${it.testKey}_avg_${it.age}${it.phase ? '_' + it.phase : ''}`;
         else key = `${it.mix}_${it.testKey}_${it.specimenId}`;
         if (existingKeys.has(key)) continue;
         if (prev.length + toAdd.length >= 100) break;
@@ -994,7 +994,7 @@ function ComparatorView({ state, T, lang }) {
     if (s.kind === 'mechAvg') {
       // Promedio de réplicas mecánicas en (mix, test, age)
       const allSpecs = state.results[s.mix]?.[s.testKey] || [];
-      const specsAtAge = allSpecs.filter(x => x.age === s.age && x.parsed && x.parsed.pmax > 0);
+      const specsAtAge = allSpecs.filter(x => x.age === s.age && (!s.phase || window.phaseOf(s.mix, x) === s.phase) && x.parsed && x.parsed.pmax > 0);
       if (specsAtAge.length === 0) return null;
       const seriesPts = specsAtAge.map(spec => {
         const proc = processMech(spec, s.testKey, viewState, s.mix);
@@ -1034,7 +1034,7 @@ function ComparatorView({ state, T, lang }) {
       return {
         points: avgPts,
         color,
-        label: name || `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`,
+        label: name || `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-avg ${s.age}d${window.phaseSuffix(s.phase)}`,
         key: s.key,
         kind: 'mechAvg',
       };
@@ -1332,13 +1332,13 @@ function ComparatorView({ state, T, lang }) {
               statsLine = `Δ${last?.t || '?'}d: ${last?.change?.toFixed(0) || '—'} μm/m`;
             } else if (s.kind === 'mechAvg') {
               const allSpecs = state.results[s.mix]?.[s.testKey] || [];
-              const specsAtAge = allSpecs.filter(x => x.age === s.age && x.parsed && x.parsed.pmax > 0);
+              const specsAtAge = allSpecs.filter(x => x.age === s.age && (!s.phase || window.phaseOf(s.mix, x) === s.phase) && x.parsed && x.parsed.pmax > 0);
               const pmaxes = specsAtAge.map(spec => {
                 const t = (spec.trimIdx || spec.trimEndIdx != null) ? window.applyTrim(spec.parsed, spec.trimIdx, spec.trimEndIdx) : spec.parsed;
                 return t.pmax;
               });
               const avgPmax = pmaxes.length ? pmaxes.reduce((a,b)=>a+b,0)/pmaxes.length : null;
-              defaultName = `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`;
+              defaultName = `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-avg ${s.age}d${window.phaseSuffix(s.phase)}`;
               statsLine = `Pmax̄ ${avgPmax?.toFixed(2) || '—'} kN · ${specsAtAge.length} probetas · ${s.age}d`;
             } else {
               const spec = state.results[s.mix]?.[s.testKey]?.find(x => x.id === s.specimenId);
@@ -1399,13 +1399,15 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
         if (s.parsed && s.parsed.pmax > 0) {
           items.push({
             kind: 'mech', mix, testKey: test, specimenId: s.id,
-            age: s.age, pmax: s.parsed.pmax, smax: s.parsed.smax,
+            age: s.age, pmax: s.parsed.pmax, smax: s.parsed.smax, phase: window.phaseOf(mix, s),
           });
-          if (!byAge.has(s.age)) byAge.set(s.age, []);
-          byAge.get(s.age).push(s);
+          const bk = window.phaseOf(mix, s) + '|' + s.age;
+          if (!byAge.has(bk)) byAge.set(bk, []);
+          byAge.get(bk).push(s);
         }
       }
-      for (const [age, specsAtAge] of byAge.entries()) {
+      for (const [bk, specsAtAge] of byAge.entries()) {
+        const age = specsAtAge[0].age, phase = bk.split('|')[0];
         if (specsAtAge.length >= 2) {
           const pmaxes = specsAtAge.map(s => {
             const t = (s.trimIdx || s.trimEndIdx != null) ? window.applyTrim(s.parsed, s.trimIdx, s.trimEndIdx) : s.parsed;
@@ -1414,7 +1416,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
           const avgPmax = pmaxes.reduce((a,b)=>a+b,0) / pmaxes.length;
           items.push({
             kind: 'mechAvg', mix, testKey: test, specimenId: 'avg',
-            age, pmax: avgPmax, smax: 0,
+            age, phase, pmax: avgPmax, smax: 0,
             specimenIds: specsAtAge.map(s => s.id),
           });
         }
@@ -1448,6 +1450,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
   const [filterMix, setFilterMix] = React.useState('all');
   const [filterTest, setFilterTest] = React.useState('all');
   const [filterAge, setFilterAge] = React.useState('all');
+  const [filterPhase, setFilterPhase] = React.useState('all');
   const [filterAgg, setFilterAgg] = React.useState('all'); // all | avg | individual
   const [picked, setPicked] = React.useState(new Set());
   const [paramFilters, setParamFilters] = React.useState({}); // {BR:'+'|'-'|'0',...}
@@ -1471,6 +1474,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
       if (filterTest !== 'retraction' && it.testKey !== filterTest) return false;
     }
     if (filterAge !== 'all' && it.age !== parseInt(filterAge)) return false;
+    if (filterPhase !== 'all' && it.phase !== filterPhase) return false;
     if (filterAgg === 'avg' && !(it.kind === 'mechAvg' || it.kind === 'shrinkMix')) return false;
     if (filterAgg === 'individual' && !(it.kind === 'mech' || it.kind === 'shrink')) return false;
     // param filters (only meaningful for factorial mixes)
@@ -1485,14 +1489,14 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
       }
     }
     if (text) {
-      const s = `${window.mixLabel(it.mix)} ${it.testKey} ${it.specimenId} ${it.age}d`.toLowerCase();
+      const s = `${window.mixLabel(it.mix)} ${it.testKey} ${it.specimenId} ${it.age}d ${window.PHASE_TAG[it.phase] || ''}`.toLowerCase();
       if (!s.includes(text.toLowerCase())) return false;
     }
     return true;
   });
 
   const keyOf = (it) => {
-    if (it.kind === 'mechAvg') return `${it.mix}_${it.testKey}_avg_${it.age}`;
+    if (it.kind === 'mechAvg') return `${it.mix}_${it.testKey}_avg_${it.age}_${it.phase}`;
     return `${it.mix}_${it.testKey}_${it.specimenId}_${it.kind}`;
   };
   const toggle = (it) => {
@@ -1513,7 +1517,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
   const confirmAdd = () => {
     const list = items.filter(it => picked.has(keyOf(it))).map(it => ({
       kind: it.kind, mix: it.mix, testKey: it.testKey, specimenId: it.specimenId,
-      ...(it.kind === 'mechAvg' ? { age: it.age, specimenIds: it.specimenIds } : {}),
+      ...(it.kind === 'mechAvg' ? { age: it.age, specimenIds: it.specimenIds, phase: it.phase } : {}),
     }));
     if (list.length === 0) return;
     onSelectMany(list);
@@ -1552,6 +1556,12 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
           <select value={filterMix} onChange={(e) => setFilterMix(e.target.value)}>
             <option value="all">{T.allMixes || 'Todas las mezclas'}</option>
             {allMixes.map(m => <option key={m} value={m}>{window.mixLabel(m)}</option>)}
+          </select>
+          <select value={filterPhase} onChange={(e) => setFilterPhase(e.target.value)}>
+            <option value="all">{T.allPhases || 'Todas las fases'}</option>
+            <option value="p1">{T.phase1 || 'Fase 1'}</option>
+            <option value="p2">{T.phase2 || 'Fase 2'}</option>
+            <option value="valid">{T.validation || 'Validación'}</option>
           </select>
           <select value={filterTest} onChange={(e) => setFilterTest(e.target.value)}>
             <option value="all">{T.allTests || 'Todos los ensayos'}</option>
@@ -1596,6 +1606,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
                    onClick={() => toggle(it)}>
                 <input type="checkbox" checked={sel} readOnly />
                 <span className="pi-mix">{window.mixLabel(it.mix)}</span>
+                <span className="pi-test" style={{minWidth:30, color:'var(--text-3)'}}>{window.PHASE_TAG[it.phase] || ''}</span>
                 <span className="pi-test">{testLabel(it)}</span>
                 <span className="pi-age">{it.age}{T.day || 'd'}</span>
                 <span className="pi-pmax">{statLabel(it)}</span>

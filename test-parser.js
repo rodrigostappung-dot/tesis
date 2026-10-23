@@ -143,6 +143,9 @@ const _m45p2 = (letters, agesBy) => letters.split('').map((c, i) => ({ id: '2' +
 window.M45_PHASE2_FLEXION_SPECIMENS = _m45p2('abcdefghi', i => [1, 7, 28][Math.floor(i / 3)]);
 window.M45_PHASE2_COMPRESSION_SPECIMENS = _m45p2('abcdefghijklmnopqr', i => [1, 7, 28][Math.floor(i / 6)]);
 window.specPhase = (s) => /^2[A-Za-z]$/.test(s?.id || '') ? 2 : 1;
+window.phaseOf = (mix, s) => parseInt(mix) > 45 ? 'valid' : (window.specPhase(s) === 2 ? 'p2' : 'p1');
+window.PHASE_TAG = { p1: 'F1', p2: 'F2', valid: 'Val' };
+window.phaseSuffix = (p) => p ? ' ' + window.PHASE_TAG[p] : '';
 window.specDisplayId = (s) => /^2[A-Za-z]$/.test(s?.id || '') ? s.id.slice(1) : s?.id;
 window.M45_SHRINKAGE_SPECIMENS = [
   { id: 'A' }, { id: 'B' }, { id: 'C' }, { id: 'D' }, { id: 'E' }, { id: 'F' },

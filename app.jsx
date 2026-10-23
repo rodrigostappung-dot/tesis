@@ -632,6 +632,7 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
   const [filterMix, setFilterMix] = useState('all');
   const [filterTest, setFilterTest] = useState('all');
   const [filterAge, setFilterAge] = useState('all');
+  const [filterPhase, setFilterPhase] = useState('all');
   const [onlyData, setOnlyData] = useState(true);
   const [paramFilters, setParamFilters] = useState({}); // {BR:'+'|'-'|'0', ...}
 
@@ -650,12 +651,12 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
       if (user.hasFlexion) {
         for (const s of (md.flexion || [])) {
           if (onlyData && !(s.parsed && s.parsed.pmax > 0)) continue;
-          out.push({ mix, test: 'flexion', id: s.id, age: s.age });
+          out.push({ mix, test: 'flexion', id: s.id, age: s.age, phase: window.phaseOf(mix, s) });
         }
       }
       for (const s of (md.compression || [])) {
         if (onlyData && !(s.parsed && s.parsed.pmax > 0)) continue;
-        out.push({ mix, test: 'compression', id: s.id, age: s.age });
+        out.push({ mix, test: 'compression', id: s.id, age: s.age, phase: window.phaseOf(mix, s) });
       }
     }
     return out;
@@ -665,6 +666,7 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
     if (filterMix !== 'all' && it.mix !== parseInt(filterMix)) return false;
     if (filterTest !== 'all' && it.test !== filterTest) return false;
     if (filterAge !== 'all' && it.age !== parseInt(filterAge)) return false;
+    if (filterPhase !== 'all' && it.phase !== filterPhase) return false;
     // parameter filters
     const design = designByRun[it.mix];
     for (const f of factors) {
@@ -701,6 +703,12 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
         <select value={filterMix} onChange={(e)=>setFilterMix(e.target.value)}>
           <option value="all">{T.allMixes || 'Todas las mezclas'}</option>
           {allMixes.map(m => <option key={m} value={m}>{window.mixLabel(m)}</option>)}
+        </select>
+        <select value={filterPhase} onChange={(e)=>setFilterPhase(e.target.value)}>
+          <option value="all">{T.allPhases || 'Todas las fases'}</option>
+          <option value="p1">{T.phase1 || 'Fase 1'}</option>
+          <option value="p2">{T.phase2 || 'Fase 2'}</option>
+          <option value="valid">{T.validation || 'Validación'}</option>
         </select>
         <select value={filterTest} onChange={(e)=>setFilterTest(e.target.value)}>
           <option value="all">{T.allTests || 'Todos los ensayos'}</option>

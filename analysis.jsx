@@ -63,9 +63,9 @@ function analysisSpecMetrics(spec, testKey, mix, view) {
 }
 
 // Promedio de una métrica mecánica entre las probetas de (mix, test) a una edad dada.
-function analysisAvgMetricAtAge(state, mix, testKey, age, metricKey, view) {
+function analysisAvgMetricAtAge(state, mix, testKey, age, metricKey, view, phase) {
   const ageNum = Number(age);
-  const specs = (state.results[mix]?.[testKey] || []).filter(s => Number(s.age) === ageNum && s.parsed && s.parsed.pmax > 0);
+  const specs = (state.results[mix]?.[testKey] || []).filter(s => Number(s.age) === ageNum && (!phase || window.phaseOf(mix, s) === phase) && s.parsed && s.parsed.pmax > 0);
   if (!specs.length) return null;
   const vals = specs.map(s => analysisSpecMetrics(s, testKey, mix, view)?.[metricKey]).filter(v => v != null && !isNaN(v));
   if (!vals.length) return null;
@@ -98,18 +98,18 @@ function varLabelFor(v, lang) { return lang === 'en' && v.en ? v.en : v.label; }
 
 function keyOfItem(it) {
   if (it.kind === 'spec') return `${it.mix}_${it.testKey}_spec_${it.specimenId}`;
-  if (it.kind === 'avg') return `${it.mix}_${it.testKey}_avg_${it.age}`;
-  if (it.kind === 'ratio') return `${it.mix}_${it.testKey}_ratio_${it.ageA}_${it.ageB}`;
-  if (it.kind === 'mix') return `${it.mix}_mix`;
+  if (it.kind === 'avg') return `${it.mix}_${it.testKey}_avg_${it.age}${it.phase ? '_' + it.phase : ''}`;
+  if (it.kind === 'ratio') return `${it.mix}_${it.testKey}_ratio_${it.ageA}_${it.ageB}${it.phase ? '_' + it.phase : ''}`;
+  if (it.kind === 'mix') return `${it.mix}_mix${it.phase ? '_' + it.phase : ''}`;
   return `${it.mix}_${it.testKey}_${it.kind}`;
 }
 
 function defaultAnalysisLabel(it) {
   const prefix = it.testKey === 'flexion' ? 'F' : 'C';
   if (it.kind === 'spec') return `${window.mixLabel(it.mix)} ${prefix}-${it.specimenId} ${it.age}d`;
-  if (it.kind === 'avg') return `${window.mixLabel(it.mix)} ${prefix}-avg ${it.age}d`;
-  if (it.kind === 'ratio') return `${window.mixLabel(it.mix)} ${prefix}-ratio ${it.ageA}v${it.ageB}d`;
-  if (it.kind === 'mix') return `${window.mixLabel(it.mix)}`;
+  if (it.kind === 'avg') return `${window.mixLabel(it.mix)} ${prefix}-avg ${it.age}d${window.phaseSuffix(it.phase)}`;
+  if (it.kind === 'ratio') return `${window.mixLabel(it.mix)} ${prefix}-ratio ${it.ageA}v${it.ageB}d${window.phaseSuffix(it.phase)}`;
+  if (it.kind === 'mix') return `${window.mixLabel(it.mix)}${window.phaseSuffix(it.phase)}`;
   return `${window.mixLabel(it.mix)}`;
 }
 
@@ -123,8 +123,8 @@ function evalAxisVar(varDef, item, state, ageOverride, axisTestKey, view) {
   if (varDef.group === 'design') return window.getMixParam ? window.getMixParam(item.mix, varDef.key) : null;
   if (varDef.group === 'ratio') {
     if (item.kind !== 'ratio') return null;
-    const a = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageA, varDef.base, view);
-    const b = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageB, varDef.base, view);
+    const a = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageA, varDef.base, view, item.phase);
+    const b = analysisAvgMetricAtAge(state, item.mix, item.testKey, item.ageB, varDef.base, view, item.phase);
     if (a == null || b == null || b === 0) return null;
     return a / b;
   }
@@ -133,10 +133,10 @@ function evalAxisVar(varDef, item, state, ageOverride, axisTestKey, view) {
     // Un punto por mezcla: siempre se usa el promedio de las probetas del ensayo elegido
     // para ESTE eje, a la edad fija del eje.
     if (!ageOverride || ageOverride === 'item') return null;
-    return analysisAvgMetricAtAge(state, item.mix, axisTestKey, ageOverride, varDef.id, view);
+    return analysisAvgMetricAtAge(state, item.mix, axisTestKey, ageOverride, varDef.id, view, item.phase);
   }
   if (ageOverride && ageOverride !== 'item') {
-    return analysisAvgMetricAtAge(state, item.mix, item.testKey, ageOverride, varDef.id, view);
+    return analysisAvgMetricAtAge(state, item.mix, item.testKey, ageOverride, varDef.id, view, item.phase);
   }
   if (item.kind === 'spec') {
     const spec = state.results[item.mix]?.[item.testKey]?.find(s => s.id === item.specimenId);
@@ -145,7 +145,7 @@ function evalAxisVar(varDef, item, state, ageOverride, axisTestKey, view) {
     return m ? m[varDef.id] : null;
   }
   if (item.kind === 'avg') {
-    return analysisAvgMetricAtAge(state, item.mix, item.testKey, item.age, varDef.id, view);
+    return analysisAvgMetricAtAge(state, item.mix, item.testKey, item.age, varDef.id, view, item.phase);
   }
   if (item.kind === 'ratio') {
     // Sin ageOverride, una variable mecánica no aplica a un ítem de tipo ratio.
@@ -292,24 +292,29 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
       const byAge = new Map();
       for (const s of specs) {
         if (s.parsed && s.parsed.pmax > 0) {
-          items.push({ kind: 'spec', mix, testKey: test, specimenId: s.id, age: s.age, pmax: s.parsed.pmax, smax: s.parsed.smax });
-          if (!byAge.has(s.age)) byAge.set(s.age, []);
-          byAge.get(s.age).push(s);
+          const ph = window.phaseOf(mix, s);
+          items.push({ kind: 'spec', mix, testKey: test, specimenId: s.id, age: s.age, phase: ph, pmax: s.parsed.pmax, smax: s.parsed.smax });
+          if (!byAge.has(ph)) byAge.set(ph, new Map());
+          const m = byAge.get(ph);
+          if (!m.has(s.age)) m.set(s.age, []);
+          m.get(s.age).push(s);
         }
       }
-      for (const [age, arr] of byAge.entries()) {
-        if (arr.length >= 2) {
-          const avgP = analysisAvgMetricAtAge(state, mix, test, age, 'pmaxKN');
-          items.push({ kind: 'avg', mix, testKey: test, age, n: arr.length, pmax: avgP });
+      for (const [phase, ageMap] of byAge.entries()) {
+        for (const [age, arr] of ageMap.entries()) {
+          if (arr.length >= 2) {
+            const avgP = analysisAvgMetricAtAge(state, mix, test, age, 'pmaxKN', undefined, phase);
+            items.push({ kind: 'avg', mix, testKey: test, age, phase, n: arr.length, pmax: avgP });
+          }
         }
+        const agesWithData = [...ageMap.keys()];
+        [[1, 7], [1, 28], [7, 28]].forEach(([a, b]) => {
+          if (agesWithData.includes(a) && agesWithData.includes(b)) {
+            const ratioKN = evalAxisVar({ group: 'ratio', base: 'pmaxKN' }, { kind: 'ratio', mix, testKey: test, ageA: a, ageB: b, phase }, state);
+            items.push({ kind: 'ratio', mix, testKey: test, ageA: a, ageB: b, phase, ratioKN });
+          }
+        });
       }
-      const agesWithData = [...byAge.keys()];
-      [[1, 7], [1, 28], [7, 28]].forEach(([a, b]) => {
-        if (agesWithData.includes(a) && agesWithData.includes(b)) {
-          const ratioKN = evalAxisVar({ group: 'ratio', base: 'pmaxKN' }, { kind: 'ratio', mix, testKey: test, ageA: a, ageB: b }, state);
-          items.push({ kind: 'ratio', mix, testKey: test, ageA: a, ageB: b, ratioKN });
-        }
-      });
     }
   }
   items.sort((a, b) => a.mix - b.mix || a.testKey.localeCompare(b.testKey) || a.kind.localeCompare(b.kind));
@@ -318,6 +323,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
   const [filterMix, setFilterMix] = React.useState('all');
   const [filterTest, setFilterTest] = React.useState('all');
   const [filterAge, setFilterAge] = React.useState('all');
+  const [filterPhase, setFilterPhase] = React.useState('all');
   const [filterAgg, setFilterAgg] = React.useState('all');
   const [picked, setPicked] = React.useState(new Set());
   const [paramFilters, setParamFilters] = React.useState({});
@@ -335,6 +341,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
   const filtered = items.filter(it => {
     if (filterMix !== 'all' && it.mix !== parseInt(filterMix)) return false;
     if (filterTest !== 'all' && it.testKey !== filterTest) return false;
+    if (filterPhase !== 'all' && it.phase !== filterPhase) return false;
     if (filterAge !== 'all') {
       if (it.kind === 'ratio') return false;
       if (it.age !== parseInt(filterAge)) return false;
@@ -351,7 +358,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
       if (paramFilters.TMF && paramFilters.TMF !== 'all' && String(window.getMixParam(it.mix, 'TMF')) !== paramFilters.TMF) return false;
     }
     if (text) {
-      const s = `${window.mixLabel(it.mix)} ${it.testKey} ${it.specimenId || ''} ${it.age || ''} ${it.kind === 'ratio' ? it.ageA + 'v' + it.ageB : ''}`.toLowerCase();
+      const s = `${window.mixLabel(it.mix)} ${it.testKey} ${it.specimenId || ''} ${it.age || ''} ${it.kind === 'ratio' ? it.ageA + 'v' + it.ageB : ''} ${window.PHASE_TAG[it.phase] || ''}`.toLowerCase();
       if (!s.includes(text.toLowerCase())) return false;
     }
     return true;
@@ -401,6 +408,12 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
             <option value="all">{T.allMixes || 'Todas las mezclas'}</option>
             {allMixes.map(m => <option key={m} value={m}>{window.mixLabel(m)}</option>)}
           </select>
+          <select value={filterPhase} onChange={(e) => setFilterPhase(e.target.value)}>
+            <option value="all">{T.allPhases || 'Todas las fases'}</option>
+            <option value="p1">{T.phase1 || 'Fase 1'}</option>
+            <option value="p2">{T.phase2 || 'Fase 2'}</option>
+            <option value="valid">{T.validation || 'Validación'}</option>
+          </select>
           <select value={filterTest} onChange={(e) => setFilterTest(e.target.value)}>
             <option value="all">{T.allTests || 'Todos los ensayos'}</option>
             {user.hasFlexion && <option value="flexion">{T.flexion}</option>}
@@ -449,6 +462,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
               <div key={k} className={'picker-item' + (sel ? ' selected' : '')} onClick={() => toggle(it)}>
                 <input type="checkbox" checked={sel} readOnly />
                 <span className="pi-mix">{window.mixLabel(it.mix)}</span>
+                <span className="pi-test" style={{minWidth:30, color:'var(--text-3)'}}>{window.PHASE_TAG[it.phase] || ''}</span>
                 <span className="pi-test">{testLabel(it)}</span>
                 <span className="pi-age">{ageLabel(it)}</span>
                 <span className="pi-pmax">{statLabel(it)}</span>
@@ -470,12 +484,14 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
   for (let mix = 1; mix <= user.mixCount; mix++) {
     const md = state.results[mix];
     if (!md) continue;
-    const has = testsToCheck.some(t => (md[t] || []).some(s => s.parsed && s.parsed.pmax > 0));
-    if (has) mixes.push({ mix });
+    const phases = new Set();
+    testsToCheck.forEach(t => (md[t] || []).forEach(s => { if (s.parsed && s.parsed.pmax > 0) phases.add(window.phaseOf(mix, s)); }));
+    if (phases.size) mixes.push({ mix, phases: [...phases] });
   }
 
   const [text, setText] = React.useState('');
   const [paramFilters, setParamFilters] = React.useState({});
+  const [filterPhase, setFilterPhase] = React.useState('all');
   const [picked, setPicked] = React.useState(new Set());
 
   const designByRun = React.useMemo(() => {
@@ -486,7 +502,9 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
   const tmfValues = React.useMemo(() => [...new Set(mixes.map(({ mix }) => window.getMixParam(mix, 'TMF')).filter(v => v != null))].sort((a, b) => a - b), [mixes]);
   const hasParamFilters = Object.values(paramFilters).some(v => v && v !== 'all');
 
-  const filtered = mixes.filter(({ mix }) => {
+  React.useEffect(() => setPicked(new Set()), [filterPhase]);
+  const filtered = mixes.filter(({ mix, phases }) => {
+    if (filterPhase !== 'all' && !phases.includes(filterPhase)) return false;
     if (hasParamFilters) {
       const d = designByRun[mix];
       for (const f of factors) {
@@ -506,7 +524,7 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
   const clearPicked = () => setPicked(new Set());
 
   const confirmAdd = () => {
-    const items = [...picked].map(mix => ({ kind: 'mix', mix }));
+    const items = [...picked].map(mix => (filterPhase !== 'all' ? { kind: 'mix', mix, phase: filterPhase } : { kind: 'mix', mix }));
     if (items.length) onSelectMany(items);
   };
 
@@ -528,6 +546,12 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
         </div>
         <div className="picker-filters">
           <input className="picker-search" placeholder={T.search || 'Buscar…'} value={text} onChange={(e) => setText(e.target.value)} />
+          <select value={filterPhase} onChange={(e) => setFilterPhase(e.target.value)}>
+            <option value="all">{T.allPhases || 'Todas las fases'}</option>
+            <option value="p1">{T.phase1 || 'Fase 1'}</option>
+            <option value="p2">{T.phase2 || 'Fase 2'}</option>
+            <option value="valid">{T.validation || 'Validación'}</option>
+          </select>
         </div>
         {user.hasFactorial && (
           <div className="picker-params">
@@ -555,12 +579,13 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
         )}
         <div className="picker-list">
           {filtered.length === 0 && <div className="hint-empty">{T.noCurves || 'No hay ensayos.'}</div>}
-          {filtered.map(({ mix }) => {
+          {filtered.map(({ mix, phases }) => {
             const sel = picked.has(mix);
             return (
               <div key={mix} className={'picker-item' + (sel ? ' selected' : '')} onClick={() => toggleMix(mix)}>
                 <input type="checkbox" checked={sel} readOnly />
                 <span className="pi-mix">{window.mixLabel(mix)}</span>
+                <span className="pi-test" style={{color:'var(--text-3)'}}>{(filterPhase !== 'all' ? [filterPhase] : phases).map(p => window.PHASE_TAG[p]).join(' · ')}</span>
               </div>
             );
           })}
