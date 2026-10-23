@@ -66,6 +66,13 @@ window.MIX_PARAMS = (function () {
     const [tempCat, BR, FD, SD, AD, SL, AL, T] = r;
     out[mix] = { tempCat, BR, FD, SD, AD, SL, AL, T, TMF: Math.max(SL, AL) };
   });
+  // Validación P1–P14 (46–59): FD = FVF·1%, AD = FD·AMF, SL/AL según nivel
+  const SLv = { '-': 6, '0': 13, '+': 20 }, ALv = { '-': 5, '0': 15, '+': 20 };
+  (window.VALIDATION_MIXES || []).forEach(v => {
+    const FD = v.FVFp / 10000, AD = FD * v.AMFp / 100, SD = FD - AD;
+    const SL = SLv[v.SFL], AL = ALv[v.AFL];
+    out[v.run] = { tempCat: v.Tc < 20 ? 'frio' : 'caliente', BR: v.BRp / 100, FD, SD, AD, SL, AL, T: v.Tc, t: v.t, TMF: Math.max(SL, AL) };
+  });
   return out;
 })();
 
@@ -85,4 +92,5 @@ window.MIX_PARAM_LABELS = {
   AL:  { label: 'Largo fibra amorfa', unit: '(mm)' },
   T:   { label: 'Temperatura', unit: '(°C)' },
   TMF: { label: 'Tamaño máx. de fibra', unit: '(mm)' },
+  t:   { label: 'Tiempo (validación)', unit: '(días)' },
 };

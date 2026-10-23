@@ -86,7 +86,6 @@ window.FB = {
     const doc = {
       castDate: meta.castDate || '',
       castMoment: meta.castMoment || '',
-      retraction: mixData.retraction,
       flexion: compactMech(mixData.flexion),
       compression: compactMech(mixData.compression),
       _updatedAt: firebase.firestore.FieldValue.serverTimestamp(),

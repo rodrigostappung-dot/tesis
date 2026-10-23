@@ -123,6 +123,27 @@ window.M45_COMPRESSION_SPECIMENS = [
   // día 28: G,H,I
   { id: 'G', age: 28 }, { id: 'H', age: 28 }, { id: 'I', age: 28 },
 ];
+// Fase 2 (mezclas 1–45): flexo A/B/C (1/7/28 d), comp A–F (2 por edad). IDs con prefijo "2".
+window.PHASE2_FLEXION_SPECIMENS = [
+  { id: '2A', age: 1, phase: 2 }, { id: '2B', age: 7, phase: 2 }, { id: '2C', age: 28, phase: 2 },
+];
+window.PHASE2_COMPRESSION_SPECIMENS = [
+  { id: '2A', age: 1, phase: 2 }, { id: '2B', age: 1, phase: 2 },
+  { id: '2C', age: 7, phase: 2 }, { id: '2D', age: 7, phase: 2 },
+  { id: '2E', age: 28, phase: 2 }, { id: '2F', age: 28, phase: 2 },
+];
+// Mezclas de validación (P1–P14): 3 flexo (A–C) + 3 comp (A–C), todas a la edad t de la mezcla.
+window.validSpecs = function(mix) {
+  const v = (window.VALIDATION_MIXES || []).find(x => x.run === parseInt(mix));
+  const age = v ? v.t : 28;
+  return [{ id: 'A', age }, { id: 'B', age }, { id: 'C', age }];
+};
+// Mezcla 45, fase 2: flexo a–c (1d), d–f (7d), g–i (28d); comp a–f (1d), g–l (7d), m–r (28d).
+const _m45p2 = (letters, agesBy) => letters.split('').map((c, i) => ({ id: '2' + c, age: agesBy(i), phase: 2 }));
+window.M45_PHASE2_FLEXION_SPECIMENS = _m45p2('abcdefghi', i => [1, 7, 28][Math.floor(i / 3)]);
+window.M45_PHASE2_COMPRESSION_SPECIMENS = _m45p2('abcdefghijklmnopqr', i => [1, 7, 28][Math.floor(i / 6)]);
+window.specPhase = (s) => /^2[A-Za-z]$/.test(s?.id || '') ? 2 : 1;
+window.specDisplayId = (s) => /^2[A-Za-z]$/.test(s?.id || '') ? s.id.slice(1) : s?.id;
 window.M45_SHRINKAGE_SPECIMENS = [
   { id: 'A' }, { id: 'B' }, { id: 'C' }, { id: 'D' }, { id: 'E' }, { id: 'F' },
 ];
@@ -130,6 +151,7 @@ window.M45_SHRINKAGE_SPECIMENS = [
 // Devuelve la definición de probetas para una mezcla y ensayo.
 // (Compat: legacy, asume Rodrigo. El nuevo entry point user-aware es getSpecsForUser en users.js)
 window.getSpecsFor = function(mix, test) {
+  if (window.USERS?.rodrigo) return window.getSpecsForUser(window.USERS.rodrigo, parseInt(mix), test);
   if (parseInt(mix) === 45) {
     if (test === 'flexion') return window.M45_FLEXION_SPECIMENS;
     if (test === 'compression') return window.M45_COMPRESSION_SPECIMENS;
@@ -153,7 +175,7 @@ function emptyMechSpec(id, age) {
 // Migra una mezcla para asegurar que tenga todas las probetas declaradas en getSpecsFor.
 // Probetas extras (no declaradas) se preservan; las faltantes se rellenan vacías.
 window.migrateMixSpecs = function(mix, mixData, user) {
-  if (!mixData) return mixData;
+  if (!mixData) mixData = { retraction: [], flexion: [], compression: [] };
   const out = { ...mixData };
   const getSpecs = user
     ? (test) => window.getSpecsForUser(user, mix, test)
@@ -272,7 +294,7 @@ window.testProgress = function(test, specs) {
 window.mixProgress = function(mixData) {
   let done = 0, total = 0;
   for (const test of window.TESTS) {
-    const p = window.testProgress(test, mixData[test]);
+    const p = window.testProgress(test, (mixData && mixData[test]) || []);
     done += p.done; total += p.total;
   }
   return { done, total, pct: total > 0 ? done / total : 0 };

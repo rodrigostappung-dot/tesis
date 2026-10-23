@@ -22,7 +22,7 @@ function loadState(user) {
       if (parsed && parsed.results && parsed.mixMeta) {
         // Migrate all mixes to match current spec definitions
         for (let i = 1; i <= user.mixCount; i++) {
-          if (parsed.results[i]) parsed.results[i] = window.migrateMixSpecs(i, parsed.results[i], user);
+          parsed.results[i] = window.migrateMixSpecs(i, parsed.results[i], user); if (parsed.mixMeta && !parsed.mixMeta[i]) parsed.mixMeta[i] = { castDate: '' };
         }
         // Aplicar preload solo a Rodrigo (los datos hist\u00f3ricos vienen de ah\u00ed)
         if (user.id === 'rodrigo' && window.PRELOAD_STATE && !localStorage.getItem(PRELOAD_FLAG)) {
@@ -343,7 +343,7 @@ function MechSpecimenCard({ specimen, onUpdate, onOpenViewer, T }) {
   return (
     <div className={'replica-card' + (hasData ? ' has-data' : '')}>
       <div className="rep-header">
-        <span className="rep-num">{T.specimen} {specimen.id}</span>
+        <span className="rep-num">{T.specimen} {window.specDisplayId(specimen)}</span>
         <span className="age-pill">{specimen.age} {specimen.age === 1 ? T.day : T.days}</span>
       </div>
 
@@ -400,7 +400,7 @@ function MechSpecimenCard({ specimen, onUpdate, onOpenViewer, T }) {
 }
 
 // ----- SECCIÓN POR ENSAYO -----
-function MechTestSection({ testKey, specimens, onUpdate, onOpenViewer, T }) {
+function MechTestSection({ testKey, specimens, onUpdate, onOpenViewer, T, title }) {
   const groups = window.groupByAge(specimens);
   const ages = Object.keys(groups).map(Number).sort((a, b) => a - b);
   const prog = window.testProgress(testKey, specimens);
@@ -408,7 +408,7 @@ function MechTestSection({ testKey, specimens, onUpdate, onOpenViewer, T }) {
   return (
     <div className="test-section">
       <h3>
-        {T[testKey]}
+        {T[testKey]}{title ? ' · ' + title : ''}
         <span className="test-summary">{prog.done}/{prog.total} {T.specimens.toLowerCase()}</span>
       </h3>
       {ages.map(age => {
@@ -474,17 +474,30 @@ function MixDetail({ mix, design, mixData, mixMeta, onUpdate, onUpdateMeta, onCl
   const factors = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
   const isCenter = user?.centerMix === mix;
   const isStar = user?.id === 'rodrigo' && mix >= 33 && mix <= 44;
-  const typeLabel = isCenter ? T.centerN45 : isStar ? T.starPoint : T.factorialPoint;
+  const isValid = window.isValidationMix(mix);
+  const typeLabel = isValid ? (T.validation || 'Validación') : isCenter ? T.centerN45 : isStar ? T.starPoint : T.factorialPoint;
 
   const updateTest = (testKey, specs) => {
     const next = { ...mixData, [testKey]: specs };
     onUpdate(next);
   };
+  // Fase 1 / Fase 2 por separado (mezclas 1–45). Al editar una fase se conserva la otra.
+  const phaseSection = (testKey, phase) => {
+    const all = mixData[testKey] || [];
+    const specs = all.filter(s => window.specPhase(s) === phase);
+    if (!specs.length) return null;
+    return (
+      <MechTestSection key={testKey + phase} testKey={testKey} specimens={specs} T={T}
+        title={isValid ? null : (phase === 2 ? (T.phase2 || 'Fase 2') : (T.phase1 || 'Fase 1'))}
+        onOpenViewer={onOpenViewer}
+        onUpdate={(next) => updateTest(testKey, [...all.filter(s => window.specPhase(s) !== phase), ...next])} />
+    );
+  };
 
   return (
     <div className="mix-detail">
       <div className="detail-header">
-        <h2>N{mix}<small>{typeLabel}</small></h2>
+        <h2>{window.mixLabel(mix)}<small>{typeLabel}</small></h2>
         <button className="close-btn" onClick={onClose}>{T.backToList}</button>
       </div>
 
@@ -501,21 +514,18 @@ function MixDetail({ mix, design, mixData, mixMeta, onUpdate, onUpdateMeta, onCl
         })}
       </div>
 
-      {window.getSpecsForUser(user, mix, 'retraction').length > 0 && (
-        <ShrinkageSection specimens={mixData.retraction} T={T}
-          user={user} mix={mix} mixData={mixData}
-          onUpdateMixData={onUpdate}
-          onOpenViewer={onOpenViewer}
-          onUpdate={(specs) => updateTest('retraction', specs)} />
+      {isValid && (
+        <div className="factors-inline">
+          {[['BR', design.BRp + '%'], ['AMF', design.AMFp + '%'], ['FVF', design.FVFp + '%'], ['T', design.Tc + '°C'], ['t', design.t + ' d'], ['SFL', design.SFL], ['AFL', design.AFL]].map(([k, val]) => (
+            <React.Fragment key={k}><span>{k}</span><span className="age-pill">{val === '-' ? '−' : val}</span></React.Fragment>
+          ))}
+        </div>
       )}
-      {user.hasFlexion && (
-        <MechTestSection testKey="flexion" specimens={mixData.flexion} T={T}
-          onOpenViewer={onOpenViewer}
-          onUpdate={(specs) => updateTest('flexion', specs)} />
-      )}
-      <MechTestSection testKey="compression" specimens={mixData.compression} T={T}
-        onOpenViewer={onOpenViewer}
-        onUpdate={(specs) => updateTest('compression', specs)} />
+
+      {user.hasFlexion && phaseSection('flexion', 1)}
+      {phaseSection('compression', 1)}
+      {user.hasFlexion && phaseSection('flexion', 2)}
+      {phaseSection('compression', 2)}
     </div>
   );
 }
@@ -562,7 +572,7 @@ function MixTile({ mix, design, mixData, expanded, onClick, T, user }) {
   return (
     <div className={'mix-tile' + (expanded ? ' expanded' : '') + (isCenter ? ' is-center' : '') + (isStar ? ' is-star' : '')}
          onClick={onClick}>
-      <div className="num">N{mix}{isCenter && <small> ×3</small>}</div>
+      <div className="num">{window.mixLabel(mix)}{isCenter && <small> ×3</small>}</div>
       {cells.length > 0 && (
         <div className="mini-grid tile-mini">{cells.map((c, i) => <div key={i} className={'cell ' + c}></div>)}</div>
       )}
@@ -690,7 +700,7 @@ function ViewerNavBar({ state, user, viewerMix, viewerSpec, onNav, onClear, T })
       <div className="vn-filters">
         <select value={filterMix} onChange={(e)=>setFilterMix(e.target.value)}>
           <option value="all">{T.allMixes || 'Todas las mezclas'}</option>
-          {allMixes.map(m => <option key={m} value={m}>N{m}</option>)}
+          {allMixes.map(m => <option key={m} value={m}>{window.mixLabel(m)}</option>)}
         </select>
         <select value={filterTest} onChange={(e)=>setFilterTest(e.target.value)}>
           <option value="all">{T.allTests || 'Todos los ensayos'}</option>
@@ -770,7 +780,7 @@ function App() {
       window.FB.loadAll(newUser).then(remote => {
         if (remote) {
           for (let i = 1; i <= newUser.mixCount; i++) {
-            if (remote.results[i]) remote.results[i] = window.migrateMixSpecs(i, remote.results[i], newUser);
+            remote.results[i] = window.migrateMixSpecs(i, remote.results[i], newUser); if (remote.mixMeta && !remote.mixMeta[i]) remote.mixMeta[i] = { castDate: '' };
           }
           setState(remote);
           setFbLastSync(new Date());
@@ -792,7 +802,7 @@ function App() {
         let base = null;
         if (remote && Object.keys(remote.results).length > 0) {
           for (let i = 1; i <= user.mixCount; i++) {
-            if (remote.results[i]) remote.results[i] = window.migrateMixSpecs(i, remote.results[i], user);
+            remote.results[i] = window.migrateMixSpecs(i, remote.results[i], user); if (remote.mixMeta && !remote.mixMeta[i]) remote.mixMeta[i] = { castDate: '' };
           }
           base = remote;
         } else {
@@ -1129,7 +1139,17 @@ function App() {
           })()}
 
           <div className="mix-grid">
-            {user.factorialDesign().map(design => (
+            {user.factorialDesign().filter(d => d.run <= 45).map(design => (
+              <MixTile key={design.run} mix={design.run} design={design}
+                mixData={state.results[design.run]}
+                expanded={expanded === design.run}
+                onClick={() => setExpanded(expanded === design.run ? null : design.run)}
+                T={T} user={user} />
+            ))}
+          </div>
+          <h3 style={{margin:'6px 0 8px', fontSize:13, fontWeight:600, color:'var(--text-2)'}}>{T.validationMixes || 'Mezclas de validación'}</h3>
+          <div className="mix-grid">
+            {user.factorialDesign().filter(d => d.run > 45 && state.results[d.run]).map(design => (
               <MixTile key={design.run} mix={design.run} design={design}
                 mixData={state.results[design.run]}
                 expanded={expanded === design.run}
@@ -1154,7 +1174,7 @@ function App() {
             <h2>{T.viewerTab || 'Visualizador'}</h2>
             {viewerMix ? (
               <div className="viewer-context">
-                <span className="ctx-mix">N{viewerMix}</span>
+                <span className="ctx-mix">{window.mixLabel(viewerMix)}</span>
                 <span className="ctx-sep">·</span>
                 <span className="ctx-test">{T[viewerSpec.test]}</span>
                 {viewerSpec.test !== 'retraction' && (

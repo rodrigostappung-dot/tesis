@@ -106,11 +106,11 @@ function keyOfItem(it) {
 
 function defaultAnalysisLabel(it) {
   const prefix = it.testKey === 'flexion' ? 'F' : 'C';
-  if (it.kind === 'spec') return `N${it.mix} ${prefix}-${it.specimenId} ${it.age}d`;
-  if (it.kind === 'avg') return `N${it.mix} ${prefix}-avg ${it.age}d`;
-  if (it.kind === 'ratio') return `N${it.mix} ${prefix}-ratio ${it.ageA}v${it.ageB}d`;
-  if (it.kind === 'mix') return `N${it.mix}`;
-  return `N${it.mix}`;
+  if (it.kind === 'spec') return `${window.mixLabel(it.mix)} ${prefix}-${it.specimenId} ${it.age}d`;
+  if (it.kind === 'avg') return `${window.mixLabel(it.mix)} ${prefix}-avg ${it.age}d`;
+  if (it.kind === 'ratio') return `${window.mixLabel(it.mix)} ${prefix}-ratio ${it.ageA}v${it.ageB}d`;
+  if (it.kind === 'mix') return `${window.mixLabel(it.mix)}`;
+  return `${window.mixLabel(it.mix)}`;
 }
 
 // Evalúa el valor numérico de una variable de eje para un ítem dado.
@@ -351,7 +351,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
       if (paramFilters.TMF && paramFilters.TMF !== 'all' && String(window.getMixParam(it.mix, 'TMF')) !== paramFilters.TMF) return false;
     }
     if (text) {
-      const s = `N${it.mix} ${it.testKey} ${it.specimenId || ''} ${it.age || ''} ${it.kind === 'ratio' ? it.ageA + 'v' + it.ageB : ''}`.toLowerCase();
+      const s = `${window.mixLabel(it.mix)} ${it.testKey} ${it.specimenId || ''} ${it.age || ''} ${it.kind === 'ratio' ? it.ageA + 'v' + it.ageB : ''}`.toLowerCase();
       if (!s.includes(text.toLowerCase())) return false;
     }
     return true;
@@ -399,7 +399,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
           <input className="picker-search" placeholder={T.search || 'Buscar…'} value={text} onChange={(e) => setText(e.target.value)} />
           <select value={filterMix} onChange={(e) => setFilterMix(e.target.value)}>
             <option value="all">{T.allMixes || 'Todas las mezclas'}</option>
-            {allMixes.map(m => <option key={m} value={m}>N{m}</option>)}
+            {allMixes.map(m => <option key={m} value={m}>{window.mixLabel(m)}</option>)}
           </select>
           <select value={filterTest} onChange={(e) => setFilterTest(e.target.value)}>
             <option value="all">{T.allTests || 'Todos los ensayos'}</option>
@@ -448,7 +448,7 @@ function AnalysisPicker({ state, user, onSelectMany, onClose, T }) {
             return (
               <div key={k} className={'picker-item' + (sel ? ' selected' : '')} onClick={() => toggle(it)}>
                 <input type="checkbox" checked={sel} readOnly />
-                <span className="pi-mix">N{it.mix}</span>
+                <span className="pi-mix">{window.mixLabel(it.mix)}</span>
                 <span className="pi-test">{testLabel(it)}</span>
                 <span className="pi-age">{ageLabel(it)}</span>
                 <span className="pi-pmax">{statLabel(it)}</span>
@@ -495,7 +495,7 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
       }
       if (paramFilters.TMF && paramFilters.TMF !== 'all' && String(window.getMixParam(mix, 'TMF')) !== paramFilters.TMF) return false;
     }
-    if (text && !`N${mix}`.toLowerCase().includes(text.toLowerCase())) return false;
+    if (text && !`${window.mixLabel(mix)}`.toLowerCase().includes(text.toLowerCase())) return false;
     return true;
   });
 
@@ -560,7 +560,7 @@ function MixPicker({ state, user, onSelectMany, onClose, T }) {
             return (
               <div key={mix} className={'picker-item' + (sel ? ' selected' : '')} onClick={() => toggleMix(mix)}>
                 <input type="checkbox" checked={sel} readOnly />
-                <span className="pi-mix">N{mix}</span>
+                <span className="pi-mix">{window.mixLabel(mix)}</span>
               </div>
             );
           })}

@@ -6,49 +6,21 @@ window.USERS = {
   rodrigo: {
     id: 'rodrigo',
     name: 'Rodrigo',
-    mixCount: 45,
+    mixCount: 59,               // 1–45 factorial + 46–59 validación (P1–P14)
     hasFactorial: true,           // Mostrar matriz factorial
     hasFlexion: true,             // Tiene ensayo de flexión
     fixedShrinkAges: [0, 1, 7, 28],  // Edades fijas de retracción
-    flexionSpecs: (mix) => mix === 45 ? window.M45_FLEXION_SPECIMENS : window.FLEXION_SPECIMENS,
-    compressionSpecs: (mix) => mix === 45 ? window.M45_COMPRESSION_SPECIMENS : window.COMPRESSION_SPECIMENS,
-    shrinkageSpecs: (mix) => {
-      if (mix === 45) return window.M45_SHRINKAGE_SPECIMENS;       // centro: A–F
-      if (mix >= 33 && mix <= 44) return window.SHRINKAGE_SPECIMENS; // puntos estrella: A, B
-      return []; // vértices (1–32): sin retracción
-    },
+    flexionSpecs: (mix) => mix > 45 ? window.validSpecs(mix) : (mix === 45 ? window.M45_FLEXION_SPECIMENS.concat(window.M45_PHASE2_FLEXION_SPECIMENS) : window.FLEXION_SPECIMENS.concat(window.PHASE2_FLEXION_SPECIMENS)),
+    compressionSpecs: (mix) => mix > 45 ? window.validSpecs(mix) : (mix === 45 ? window.M45_COMPRESSION_SPECIMENS.concat(window.M45_PHASE2_COMPRESSION_SPECIMENS) : window.COMPRESSION_SPECIMENS.concat(window.PHASE2_COMPRESSION_SPECIMENS)),
+    shrinkageSpecs: () => [],     // retracción eliminada
     factorialDesign: () => window.FACTORIAL_DESIGN,
     centerMix: 45,
     firestoreCollection: 'mixes',   // Backward compat: la colección original es de Rodrigo
     localStorageKey: 'tesis_ensayos_v2',
   },
-  nicolas: {
-    id: 'nicolas',
-    name: 'Nicolás',
-    mixCount: 36,
-    hasFactorial: true,           // Carga el diseño después
-    hasFlexion: false,            // Solo compresión + retracción
-    fixedShrinkAges: null,        // Edades configurables por mezcla
-    flexionSpecs: () => [],
-    compressionSpecs: () => [
-      { id: 'A', age: 7 }, { id: 'B', age: 7 }, { id: 'C', age: 7 },
-      { id: 'D', age: 28 }, { id: 'E', age: 28 }, { id: 'F', age: 28 },
-    ],
-    shrinkageSpecs: () => [{ id: 'A' }, { id: 'B' }],
-    factorialDesign: () => window.NICOLAS_FACTORIAL_DESIGN || [],
-    centerMix: null,
-    firestoreCollection: 'mixes_nicolas',
-    localStorageKey: 'tesis_nicolas_v1',
-  },
 };
 
-window.USER_LIST = ['rodrigo', 'nicolas'];
-
-// Diseño factorial placeholder para Nicolás (hasta que lo cargue)
-window.NICOLAS_FACTORIAL_DESIGN = [];
-for (let i = 1; i <= 36; i++) {
-  window.NICOLAS_FACTORIAL_DESIGN.push({ run: i });
-}
+window.USER_LIST = ['rodrigo'];
 
 // Helpers que reemplazan getSpecsFor, considerando el usuario activo
 window.getActiveUser = function() {

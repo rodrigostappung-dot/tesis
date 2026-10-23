@@ -53,10 +53,24 @@ window.FACTORIAL_DESIGN = [
   { run: 45, BR:'0', AMF:'0', FVF:'0', SFL:'0', AFL:'0', T:'0' },
 ];
 
+// Mezclas de validación P1–P14 (run interno 46–59). BR/AMF/FVF en %, T en °C, t en días.
+window.VALIDATION_MIXES = [
+  ['P1', 7.5, 37, 62.5, 15, 2, '-', '-'], ['P2', 7.5, 37, 87.5, 15, 5, '-', '+'],
+  ['P3', 7.5, 63, 62.5, 15, 6, '-', '0'], ['P4', 7.5, 63, 87.5, 15, 8, '+', '-'],
+  ['P5', 22.5, 37, 62.5, 15, 9, '+', '+'], ['P6', 22.5, 37, 87.5, 15, 12, '+', '0'],
+  ['P7', 22.5, 63, 62.5, 15, 14, '0', '0'], ['P8', 7.5, 37, 87.5, 25, 4, '-', '-'],
+  ['P9', 7.5, 37, 62.5, 25, 5, '-', '+'], ['P10', 7.5, 63, 87.5, 25, 7, '-', '0'],
+  ['P11', 7.5, 63, 62.5, 25, 8, '+', '-'], ['P12', 22.5, 37, 87.5, 25, 11, '+', '+'],
+  ['P13', 22.5, 37, 62.5, 25, 13, '+', '0'], ['P14', 22.5, 63, 87.5, 25, 15, '0', '0'],
+].map((r, i) => ({ run: 46 + i, name: r[0], BRp: r[1], AMFp: r[2], FVFp: r[3], Tc: r[4], t: r[5], SFL: r[6], AFL: r[7], validation: true }));
+window.FACTORIAL_DESIGN.push(...window.VALIDATION_MIXES);
+window.isValidationMix = (m) => parseInt(m) > 45;
+window.mixLabel = (m) => { const n = parseInt(m); return n > 45 ? 'P' + (n - 45) : 'N' + n; };
+
 window.I18N = {
   es: {
     title: 'Resultados de Ensayos',
-    subtitle: 'Diseño factorial · 45 mezclas · Retracción / Flexión / Compresión',
+    subtitle: 'Diseño factorial · 45 mezclas + 14 de validación · Flexión / Compresión',
     progress: 'Progreso',
     overall: 'Avance global',
     mix: 'Mezcla',
@@ -220,6 +234,7 @@ window.I18N = {
     editColor: 'Editar color',
     compareMixedWarn: 'Estás mezclando ensayos mecánicos y de retracción: los ejes pueden no ser comparables.',
     curves: 'Curvas',
+    phase1: 'Fase 1', phase2: 'Fase 2', validation: 'Validación', validationMixes: 'Mezclas de validación (P1–P14)', batch: 'Lote',
     compareEmpty: 'Añade curvas para comparar.',
     pickCurve: 'Seleccionar ensayos',
     selectedCount: 'seleccionados',
@@ -264,7 +279,7 @@ window.I18N = {
   },
   en: {
     title: 'Test Results',
-    subtitle: 'Factorial design · 45 mixes · Shrinkage / Flexure / Compression',
+    subtitle: 'Factorial design · 45 mixes + 14 validation · Flexure / Compression',
     progress: 'Progress',
     overall: 'Overall progress',
     mix: 'Mix',
@@ -428,6 +443,7 @@ window.I18N = {
     editColor: 'Edit color',
     compareMixedWarn: 'You\'re mixing mechanical and shrinkage tests: the axes may not be comparable.',
     curves: 'Curves',
+    phase1: 'Phase 1', phase2: 'Phase 2', validation: 'Validation', validationMixes: 'Validation mixes (P1–P14)', batch: 'Batch',
     compareEmpty: 'Add curves to compare.',
     pickCurve: 'Select tests',
     selectedCount: 'selected',

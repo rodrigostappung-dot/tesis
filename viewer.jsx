@@ -972,7 +972,7 @@ function ComparatorView({ state, T, lang }) {
       return {
         points: seriesData.points.map(p => ({ disp: p.t, load: toShrinkUnit(p.change), t: p.t, stress: toShrinkUnit(p.change), strain: 0, elong: 0 })),
         color,
-        label: name || `N${s.mix} R-${s.specimenId}`,
+        label: name || `${window.mixLabel(s.mix)} R-${s.specimenId}`,
         key: s.key,
         kind: 'shrink',
         smooth: true,
@@ -985,7 +985,7 @@ function ComparatorView({ state, T, lang }) {
       return {
         points: pts.map(p => ({ disp: p.t, load: toShrinkUnit(p.change), t: p.t, stress: toShrinkUnit(p.change), strain: 0, elong: 0 })),
         color,
-        label: name || `N${s.mix} R-avg`,
+        label: name || `${window.mixLabel(s.mix)} R-avg`,
         key: s.key,
         kind: 'shrinkMix',
         smooth: true,
@@ -1034,7 +1034,7 @@ function ComparatorView({ state, T, lang }) {
       return {
         points: avgPts,
         color,
-        label: name || `N${s.mix} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`,
+        label: name || `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`,
         key: s.key,
         kind: 'mechAvg',
       };
@@ -1060,7 +1060,7 @@ function ComparatorView({ state, T, lang }) {
     return {
       points: pts,
       color,
-      label: name || `N${s.mix} ${s.testKey[0].toUpperCase()}-${s.specimenId}`,
+      label: name || `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-${s.specimenId}`,
       key: s.key,
       kind: 'mech',
       firstPeak,
@@ -1322,13 +1322,13 @@ function ComparatorView({ state, T, lang }) {
               const spec = state.results[s.mix]?.retraction?.find(x => x.id === s.specimenId);
               const seriesData = spec && window.shrinkageSeries(spec);
               const last = seriesData?.points[seriesData.points.length - 1];
-              defaultName = `N${s.mix} R-${s.specimenId}`;
+              defaultName = `${window.mixLabel(s.mix)} R-${s.specimenId}`;
               statsLine = `Δ${last?.t || '?'}d: ${last?.change?.toFixed(0) || '—'} μm/m`;
             } else if (s.kind === 'shrinkMix') {
               const retr = state.results[s.mix]?.retraction;
               const pts = retr ? window.shrinkageMixSeries(retr) : [];
               const last = pts[pts.length - 1];
-              defaultName = `N${s.mix} R-avg`;
+              defaultName = `${window.mixLabel(s.mix)} R-avg`;
               statsLine = `Δ${last?.t || '?'}d: ${last?.change?.toFixed(0) || '—'} μm/m`;
             } else if (s.kind === 'mechAvg') {
               const allSpecs = state.results[s.mix]?.[s.testKey] || [];
@@ -1338,14 +1338,14 @@ function ComparatorView({ state, T, lang }) {
                 return t.pmax;
               });
               const avgPmax = pmaxes.length ? pmaxes.reduce((a,b)=>a+b,0)/pmaxes.length : null;
-              defaultName = `N${s.mix} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`;
+              defaultName = `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-avg ${s.age}d`;
               statsLine = `Pmax̄ ${avgPmax?.toFixed(2) || '—'} kN · ${specsAtAge.length} probetas · ${s.age}d`;
             } else {
               const spec = state.results[s.mix]?.[s.testKey]?.find(x => x.id === s.specimenId);
               const trimmed = spec && (spec.trimIdx || spec.trimEndIdx != null)
                 ? window.applyTrim(spec.parsed, spec.trimIdx, spec.trimEndIdx)
                 : spec?.parsed;
-              defaultName = `N${s.mix} ${s.testKey[0].toUpperCase()}-${s.specimenId}`;
+              defaultName = `${window.mixLabel(s.mix)} ${s.testKey[0].toUpperCase()}-${s.specimenId}`;
               statsLine = `Pmax: ${trimmed?.pmax?.toFixed(2) || '—'} kN · σmax: ${trimmed?.smax?.toFixed(1) || '—'} MPa · ${spec?.age}d`;
             }
             const name = nameMap[s.key] || defaultName;
@@ -1421,7 +1421,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
       }
     }
     // shrinkage: por probeta (si tiene día 0)
-    const retr = state.results[mixStr]?.retraction || [];
+    const retr = []; // retracción eliminada
     for (const sp of retr) {
       const sd = window.shrinkageSeries(sp);
       if (sd && sd.points.length > 0) {
@@ -1485,7 +1485,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
       }
     }
     if (text) {
-      const s = `N${it.mix} ${it.testKey} ${it.specimenId} ${it.age}d`.toLowerCase();
+      const s = `${window.mixLabel(it.mix)} ${it.testKey} ${it.specimenId} ${it.age}d`.toLowerCase();
       if (!s.includes(text.toLowerCase())) return false;
     }
     return true;
@@ -1551,11 +1551,10 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
                  value={text} onChange={(e) => setText(e.target.value)} />
           <select value={filterMix} onChange={(e) => setFilterMix(e.target.value)}>
             <option value="all">{T.allMixes || 'Todas las mezclas'}</option>
-            {allMixes.map(m => <option key={m} value={m}>N{m}</option>)}
+            {allMixes.map(m => <option key={m} value={m}>{window.mixLabel(m)}</option>)}
           </select>
           <select value={filterTest} onChange={(e) => setFilterTest(e.target.value)}>
             <option value="all">{T.allTests || 'Todos los ensayos'}</option>
-            <option value="retraction">{T.retraction}</option>
             <option value="flexion">{T.flexion}</option>
             <option value="compression">{T.compression}</option>
           </select>
@@ -1596,7 +1595,7 @@ function CurvePicker({ state, onSelectMany, onClose, T }) {
               <div key={k} className={'picker-item' + (sel ? ' selected' : '')}
                    onClick={() => toggle(it)}>
                 <input type="checkbox" checked={sel} readOnly />
-                <span className="pi-mix">N{it.mix}</span>
+                <span className="pi-mix">{window.mixLabel(it.mix)}</span>
                 <span className="pi-test">{testLabel(it)}</span>
                 <span className="pi-age">{it.age}{T.day || 'd'}</span>
                 <span className="pi-pmax">{statLabel(it)}</span>

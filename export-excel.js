@@ -197,7 +197,7 @@
       const facVals = FACTORS.map(f => designOf(mix)[f] ?? '');
       const paramVals = designParamValsForMix(mix);
       const { rows: metricRows } = testMetricsRows(state, user, mix, testKey, meta);
-      metricRows.forEach((mr, r) => rows.push([mix, r + 1, ...facVals, ...paramVals, ...mr]));
+      metricRows.forEach((mr, r) => rows.push([window.mixLabel(mix), r + 1, ...facVals, ...paramVals, ...mr]));
     }
     return rows;
   }
@@ -223,7 +223,7 @@
       for (let r = 0; r < replicaCount; r++) {
         const c = compRows[r] || new Array(compCols).fill('');
         const fl = flexRows[r] || new Array(flexCols).fill('');
-        rows.push([mix, r + 1, ...facVals, ...paramVals, ...c, ...fl]);
+        rows.push([window.mixLabel(mix), r + 1, ...facVals, ...paramVals, ...c, ...fl]);
       }
     }
     return rows;

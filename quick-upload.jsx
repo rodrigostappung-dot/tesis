@@ -10,7 +10,7 @@
 // Parsea nombres como:
 //   "FLEXO 22A", "22B COM", "COM 22A", "COMP P34A", "com 33a", "FLEXO P34B", "32B COM.txt"
 // Devuelve { mix, test, specimen } o { mix?, test?, specimen?, raw }
-window.classifyTestFilename = function(fname) {
+window.classifyTestFilename = function(fname, batch) {
   const f = fname.replace(/\.txt$/i, '').toUpperCase().replace(/\s+/g, ' ').trim();
   let test = null;
   if (/FLEXO|FLEX/i.test(f)) test = 'flexion';
@@ -27,6 +27,11 @@ window.classifyTestFilename = function(fname) {
   if (specimen != null) {
     specimen = mix === 45 ? specimen : specimen.toUpperCase();
   }
+  if (batch === 'valid') {
+    const vm = mix >= 1 && mix <= 14 ? 45 + mix : null;
+    return { mix: vm, test, specimen: specimen ? specimen.toUpperCase() : null, raw: f };
+  }
+  if (batch === 'p2' && specimen) specimen = '2' + (mix === 45 ? specimen.toLowerCase() : specimen.toUpperCase());
   return { mix: mix >= 1 && mix <= 45 ? mix : null, test, specimen, raw: f };
 };
 
@@ -34,6 +39,7 @@ function QuickUploadTab({ state, onUpdateMix, T, lang }) {
   const [queue, setQueue] = React.useState([]); // [{file, text, parsed, detected, status}]
   const [cursor, setCursor] = React.useState(0);
   const [editMode, setEditMode] = React.useState(false);
+  const [batch, setBatch] = React.useState('p1'); // p1 | p2 | valid
 
   // Drop / pick handlers
   const handleFiles = async (files) => {
@@ -42,7 +48,7 @@ function QuickUploadTab({ state, onUpdateMix, T, lang }) {
       try {
         const text = await file.text();
         const parsed = window.parseTestFile(text);
-        const detected = window.classifyTestFilename(file.name);
+        const detected = window.classifyTestFilename(file.name, batch);
         items.push({
           file: { name: file.name, size: file.size },
           text,
@@ -87,7 +93,7 @@ function QuickUploadTab({ state, onUpdateMix, T, lang }) {
     }
     const slot = state.results[det.mix]?.[det.test]?.find(s => s.id === det.specimen);
     if (!slot) {
-      alert(T.errNoSlot || `No existe probeta ${det.specimen} en N${det.mix} ${T[det.test] || det.test}.`);
+      alert(T.errNoSlot || `No existe probeta ${det.specimen} en ${window.mixLabel(det.mix)} ${T[det.test] || det.test}.`);
       return;
     }
     // Apply
@@ -137,6 +143,13 @@ function QuickUploadTab({ state, onUpdateMix, T, lang }) {
       <div className="qu-header">
         <h2>{T.quickUpload || 'Carga rápida'}</h2>
         <p className="qu-desc">{T.quickUploadDesc || 'Arrastra varios archivos .txt y la app intentará asignarlos automáticamente. Confirmá uno por uno.'}</p>
+        <div style={{display:'flex', gap:6, alignItems:'center', marginTop:8, fontSize:12}}>
+          <span>{T.batch || 'Lote'}:</span>
+          {[['p1', T.phase1 || 'Fase 1'], ['p2', T.phase2 || 'Fase 2'], ['valid', T.validation || 'Validación (P1–P14)']].map(([k, l]) => (
+            <button key={k} className="vt-btn" onClick={() => setBatch(k)}
+              style={batch === k ? {background:'var(--accent)', color:'#fff', borderColor:'var(--accent)'} : null}>{l}</button>
+          ))}
+        </div>
       </div>
 
       {queue.length === 0 ? (
@@ -168,7 +181,7 @@ function QuickUploadTab({ state, onUpdateMix, T, lang }) {
                   </span>
                   <span className="qu-q-name" title={it.file.name}>{it.file.name}</span>
                   {it.detected.mix && (
-                    <span className="qu-q-tag">N{it.detected.mix}·{it.detected.test?.[0]?.toUpperCase()}-{it.detected.specimen}</span>
+                    <span className="qu-q-tag">{window.mixLabel(it.detected.mix)}·{it.detected.test?.[0]?.toUpperCase()}-{it.detected.specimen}</span>
                   )}
                 </div>
               ))}
@@ -218,7 +231,7 @@ function QuickUploadCard({ item, detected, editMode, onEdit, onUpdate, available
   const willOverwrite = existingSpec && existingSpec.parsed && existingSpec.parsed.pmax > 0;
 
   // For mix selector: all 45
-  const allMixes = Array.from({length: 45}, (_, i) => i + 1);
+  const allMixes = Array.from({length: 59}, (_, i) => i + 1);
 
   return (
     <div className="qu-card">
@@ -245,7 +258,7 @@ function QuickUploadCard({ item, detected, editMode, onEdit, onUpdate, available
               <label>{T.mix || 'Mezcla'}</label>
               <select value={detected.mix || ''} onChange={(e) => onUpdate({ mix: e.target.value ? parseInt(e.target.value) : null })}>
                 <option value="">—</option>
-                {allMixes.map(m => <option key={m} value={m}>N{m}</option>)}
+                {allMixes.map(m => <option key={m} value={m}>{window.mixLabel(m)}</option>)}
               </select>
             </div>
             <div className="qu-field">
@@ -261,7 +274,7 @@ function QuickUploadCard({ item, detected, editMode, onEdit, onUpdate, available
               <select value={detected.specimen || ''} onChange={(e) => onUpdate({ specimen: e.target.value || null })}
                       disabled={availableSpecs.length === 0}>
                 <option value="">—</option>
-                {availableSpecs.map(s => <option key={s.id} value={s.id}>{s.id} ({s.age}{T.day || 'd'})</option>)}
+                {availableSpecs.map(s => <option key={s.id} value={s.id}>{s.phase === 2 ? 'F2 · ' + window.specDisplayId(s) : s.id} ({s.age}{T.day || 'd'})</option>)}
               </select>
             </div>
           </div>
