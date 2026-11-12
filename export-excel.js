@@ -120,7 +120,11 @@
     if (!window.MIX_PARAMS) return [];
     return DESIGN_PARAM_KEYS.filter(k => window.MIX_PARAM_LABELS && window.MIX_PARAM_LABELS[k]);
   }
+  let INCLUDE_INFO = true;
+  const facHead = () => INCLUDE_INFO ? FACTORS : [];
+  const facValsOf = (mix) => INCLUDE_INFO ? FACTORS.map(f => designOf(mix)[f] ?? '') : [];
   function designParamHead() {
+    if (!INCLUDE_INFO) return [];
     const keys = designParamKeysAvailable();
     return keys.map(k => {
       const info = window.MIX_PARAM_LABELS[k];
@@ -128,6 +132,7 @@
     });
   }
   function designParamValsForMix(mix) {
+    if (!INCLUDE_INFO) return [];
     const keys = designParamKeysAvailable();
     return keys.map(k => {
       const v = window.getMixParam ? window.getMixParam(mix, k) : null;
@@ -163,14 +168,31 @@
     const defByAge = {}; meta.ageList.forEach(a => defByAge[a] = []);
     specsDef(user, mix, testKey).forEach(s => { if (defByAge[s.age]) defByAge[s.age].push(s.id); });
     const loaded = {}; ((md && md[testKey]) || []).forEach(s => { loaded[s.id] = s; });
-    const replicaCount = Math.max(1, ...meta.ageList.map(a => Math.ceil(defByAge[a].length / meta.slotsPerAge)));
+    let replicaCount = Math.max(1, ...meta.ageList.map(a => Math.ceil(defByAge[a].length / meta.slotsPerAge)));
+    // Mezcla centro: se divide en 3 réplicas (45.1/45.2/45.3), repartiendo por igual las probetas de cada fase y edad.
+    let slotIds = (age, r, slot) => defByAge[age][r * meta.slotsPerAge + slot];
+    if (mix === user.centerMix) {
+      const N = 3; replicaCount = N;
+      const byRep = {};
+            meta.ageList.forEach(age => {
+        const defs = specsDef(user, mix, testKey).filter(s => s.age === age);
+        const reps = Array.from({ length: N }, () => []);
+        [1, 2].forEach(ph => {
+          const ids = defs.filter(s => window.specPhase(s) === ph).map(s => s.id);
+          const k = Math.ceil(ids.length / N);
+          for (let r = 0; r < N; r++) reps[r].push(...ids.slice(r * k, (r + 1) * k));
+        });
+        byRep[age] = reps;
+      });
+      slotIds = (age, r, slot) => byRep[age][r][slot];
+    }
 
     const rows = [];
     for (let r = 0; r < replicaCount; r++) {
       const row = [];
       meta.ageList.forEach(age => {
         for (let slot = 0; slot < meta.slotsPerAge; slot++) {
-          const id = defByAge[age][r * meta.slotsPerAge + slot];
+          const id = slotIds(age, r, slot);
           const spec = id ? loaded[id] : null;
           const m = spec ? specMetrics(spec, testKey, mix) : null;
           meta.activeFields.forEach(f => {
@@ -184,20 +206,22 @@
     return { rows, colCount: meta.ageList.length * meta.slotsPerAge * meta.activeFields.length };
   }
 
+  const rowLabel = (user, mix, r) => mix === user.centerMix ? `${window.mixLabel(mix)}.${r + 1}` : window.mixLabel(mix);
+
   // Construye una hoja ancha para un ensayo: una fila por mezcla (la mezcla centro
   // se divide en N réplicas). Columnas = mezcla/réplica/factores/características + variables activas.
   function buildTestSheet(state, user, mixCount, testKey, refMix, fields) {
     const meta = testMeta(user, refMix, testKey, fields);
     const paramHead = designParamHead();
-    const head = ['N° mezcla', 'Réplica', ...FACTORS, ...paramHead, ...testMetricsHead(meta, testKey)];
+    const head = ['N° mezcla', 'Réplica', ...facHead(), ...paramHead, ...testMetricsHead(meta, testKey)];
     const rows = [head];
 
     for (let mix = 1; mix <= mixCount; mix++) {
-      if (!state.results[mix]) continue;
-      const facVals = FACTORS.map(f => designOf(mix)[f] ?? '');
+      if (!state.results[mix] || window.isValidationMix?.(mix)) continue;
+      const facVals = facValsOf(mix);
       const paramVals = designParamValsForMix(mix);
       const { rows: metricRows } = testMetricsRows(state, user, mix, testKey, meta);
-      metricRows.forEach((mr, r) => rows.push([window.mixLabel(mix), r + 1, ...facVals, ...paramVals, ...mr]));
+      metricRows.forEach((mr, r) => rows.push([rowLabel(user, mix, r), r + 1, ...facVals, ...paramVals, ...mr]));
     }
     return rows;
   }
@@ -210,12 +234,12 @@
     const compHead = testMetricsHead(compMeta, 'compression');
     const flexHead = testMetricsHead(flexMeta, 'flexion');
     const paramHead = designParamHead();
-    const head = ['N° mezcla', 'Réplica', ...FACTORS, ...paramHead, ...compHead, ...flexHead];
+    const head = ['N° mezcla', 'Réplica', ...facHead(), ...paramHead, ...compHead, ...flexHead];
     const rows = [head];
 
     for (let mix = 1; mix <= mixCount; mix++) {
-      if (!state.results[mix]) continue;
-      const facVals = FACTORS.map(f => designOf(mix)[f] ?? '');
+      if (!state.results[mix] || window.isValidationMix?.(mix)) continue;
+      const facVals = facValsOf(mix);
       const paramVals = designParamValsForMix(mix);
       const { rows: compRows, colCount: compCols } = testMetricsRows(state, user, mix, 'compression', compMeta);
       const { rows: flexRows, colCount: flexCols } = testMetricsRows(state, user, mix, 'flexion', flexMeta);
@@ -223,14 +247,50 @@
       for (let r = 0; r < replicaCount; r++) {
         const c = compRows[r] || new Array(compCols).fill('');
         const fl = flexRows[r] || new Array(flexCols).fill('');
-        rows.push([window.mixLabel(mix), r + 1, ...facVals, ...paramVals, ...c, ...fl]);
+        rows.push([rowLabel(user, mix, r), r + 1, ...facVals, ...paramVals, ...c, ...fl]);
       }
     }
     return rows;
   }
 
+  // Hoja de validación: una fila por mezcla P, con su edad real de ensayo y las réplicas de cada ensayo.
+  function buildValidationSheet(state, user, mixCount, fields, tests) {
+    const mixes = [];
+    for (let m = 1; m <= mixCount; m++) if (window.isValidationMix?.(m) && state.results[m]) mixes.push(m);
+    if (!mixes.length) return null;
+    const metas = tests.map(testKey => {
+      const activeFields = window.EXPORT_FIELDS.filter(f =>
+        fields[f.id] && !(f.compOnly && testKey !== 'compression') && !(f.flexOnly && testKey !== 'flexion'));
+      const slots = Math.max(1, ...mixes.map(m => specsDef(user, m, testKey).length));
+      return { testKey, activeFields, slots };
+    });
+    const VK = [['BRp','BR (%)'],['AMFp','AMF (%)'],['FVFp','FVF (%)'],['Tc','T (°C)'],['SFL','SFL'],['AFL','AFL']];
+    const head = ['N° mezcla', 'Edad (d)', ...(INCLUDE_INFO ? VK.map(k => k[1]) : []), ...designParamHead()];
+    metas.forEach(mt => { for (let k = 1; k <= mt.slots; k++) mt.activeFields.forEach(f => head.push(`${mt.testKey === 'flexion' ? 'Flex' : 'Comp'} #${k} ${f.label}`)); });
+    const rows = [head];
+    mixes.forEach(mix => {
+      const v = (window.VALIDATION_MIXES || []).find(x => x.run === mix);
+      const defs0 = specsDef(user, mix, metas[0].testKey);
+      const age = v && v.t != null ? v.t : (defs0[0] ? defs0[0].age : '');
+      const row = [window.mixLabel(mix), age, ...(INCLUDE_INFO ? VK.map(k => (v && v[k[0]] != null) ? v[k[0]] : '') : []), ...designParamValsForMix(mix)];
+      metas.forEach(mt => {
+        const loaded = {}; ((state.results[mix] && state.results[mix][mt.testKey]) || []).forEach(sp => { loaded[sp.id] = sp; });
+        const defs = specsDef(user, mix, mt.testKey);
+        for (let k = 0; k < mt.slots; k++) {
+          const spec = defs[k] ? loaded[defs[k].id] : null;
+          const m = spec ? specMetrics(spec, mt.testKey, mix) : null;
+          mt.activeFields.forEach(f => row.push(f.fromSpec ? (spec ? f.fromSpec(spec) : '') : (m ? f.get(m) : '')));
+        }
+      });
+      rows.push(row);
+    });
+    return rows;
+  }
+
   // Exporta según las variables activas (fields: {fieldId: bool}). Si se omite, exporta todo.
-  window.exportMixesExcel = function (state, user, T, fields) {
+  window.exportMixesExcel = function (state, user, T, fields, opts) {
+    opts = opts || {};
+    INCLUDE_INFO = opts.includeMixInfo !== false;
     if (!window.XLSX) { alert('No se pudo cargar el generador de Excel (XLSX). Revisa tu conexión.'); return; }
     fields = fields || window.EXPORT_FIELDS_DEFAULT;
     const XLSX = window.XLSX;
@@ -256,6 +316,15 @@
       const wsBoth = XLSX.utils.aoa_to_sheet(bothRows);
       wsBoth['!cols'] = bothRows[0].map((h, i) => ({ wch: i < 8 ? 10 : 15 }));
       XLSX.utils.book_append_sheet(wb, wsBoth, 'Ambos');
+    }
+
+    if (opts.includeValidation !== false) {
+      const valRows = buildValidationSheet(state, user, mixCount, fields, hasFlexion ? ['compression', 'flexion'] : ['compression']);
+      if (valRows) {
+        const wsVal = XLSX.utils.aoa_to_sheet(valRows);
+        wsVal['!cols'] = valRows[0].map((h, i) => ({ wch: i < 8 ? 10 : 15 }));
+        XLSX.utils.book_append_sheet(wb, wsVal, 'Validación');
+      }
     }
 
     const dateStr = new Date().toISOString().slice(0, 10);

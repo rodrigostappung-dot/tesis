@@ -145,6 +145,9 @@ window.M45_PHASE2_COMPRESSION_SPECIMENS = _m45p2('abcdefghijklmnopqr', i => [1, 
 window.specPhase = (s) => /^2[A-Za-z]$/.test(s?.id || '') ? 2 : 1;
 window.phaseOf = (mix, s) => parseInt(mix) > 45 ? 'valid' : (window.specPhase(s) === 2 ? 'p2' : 'p1');
 window.PHASE_TAG = { p1: 'F1', p2: 'F2', valid: 'Val' };
+window.PHASE_COLOR = { p1: '#2166ac', p2: '#e08214', valid: '#1b7837' };
+window.PHASE_NAME = { p1: 'Fase 1', p2: 'Fase 2', valid: 'Validación' };
+window.itemPhase = (s) => s.phase || (parseInt(s.mix) > 45 ? 'valid' : (s.specimenId ? window.phaseOf(s.mix, { id: s.specimenId }) : null));
 window.phaseSuffix = (p) => p ? ' ' + window.PHASE_TAG[p] : '';
 window.specDisplayId = (s) => /^2[A-Za-z]$/.test(s?.id || '') ? s.id.slice(1) : s?.id;
 window.M45_SHRINKAGE_SPECIMENS = [

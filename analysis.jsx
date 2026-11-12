@@ -648,9 +648,10 @@ function AnalysisTab({ state, user, T, lang }) {
   // aplicando overrides editables del usuario (colorByColor / colorByName).
   const colorByItems = React.useMemo(() => {
     if (colorBy === 'none') return [];
+    if (colorBy === 'PH') return [...new Set((selected || []).map(s => window.itemPhase(s)).filter(Boolean))].map(p => ({ k: p, defColor: window.PHASE_COLOR[p], defName: window.PHASE_NAME[p] }));
     if (colorBy === 'TMF') return Object.keys(tmfColorMap).map(v => ({ k: v, defColor: tmfColorMap[v], defName: `TMF ${v} mm` }));
     return ['-', '0', '+'].map(lv => ({ k: lv, defColor: LEVEL_COLOR[lv], defName: `${colorBy} ${LEVEL_NAME[lv]}` }));
-  }, [colorBy, tmfColorMap]);
+  }, [colorBy, tmfColorMap, selected]);
   const effColor = (k, def) => colorByColor[`${colorBy}:${k}`] || def;
   const effName = (k, def) => (colorByName[`${colorBy}:${k}`] != null && colorByName[`${colorBy}:${k}`] !== '') ? colorByName[`${colorBy}:${k}`] : def;
   const legendItems = colorByItems.map(it => ({ label: effName(it.k, it.defName), color: effColor(it.k, it.defColor) }));
@@ -685,7 +686,10 @@ function AnalysisTab({ state, user, T, lang }) {
     const x = evalAxisVar(xVar, s, state, xVar.group === 'mech' ? xAge : null, xTest, viewState);
     const y = evalAxisVar(yVar, s, state, yVar.group === 'mech' ? yAge : null, yTest, viewState);
     let color = colorMap[s.key] || ANALYSIS_PALETTE[i % ANALYSIS_PALETTE.length];
-    if (colorBy === 'TMF') {
+    if (colorBy === 'PH') {
+      const p = window.itemPhase(s);
+      if (p) color = effColor(p, window.PHASE_COLOR[p]);
+    } else if (colorBy === 'TMF') {
       const tv = window.getMixParam(s.mix, 'TMF');
       if (tv != null && tmfColorMap[tv]) color = effColor(tv, tmfColorMap[tv]);
     } else if (colorBy !== 'none') {
@@ -875,6 +879,7 @@ function AnalysisTab({ state, user, T, lang }) {
             <select value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
               <option value="none">{T.encNone || '— (colores individuales)'}</option>
               {COLOR_FACTORS.map(f => <option key={f} value={f}>{f}</option>)}
+              <option value="PH">{T.phaseLabel || 'Fase / Validación'}</option>
             </select>
             {colorBy !== 'none' && (
               <div className="enc-legend">
@@ -954,3 +959,4 @@ function AnalysisTab({ state, user, T, lang }) {
 }
 
 window.AnalysisTab = AnalysisTab;
+window.analysisSpecMetrics = analysisSpecMetrics;

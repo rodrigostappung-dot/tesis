@@ -419,7 +419,7 @@ window.applyCorrection = function(parsed, corr) {
     t: p.t, load: p.load, disp: p.disp - x0, stress: (p.stress || 0), strain: (p.strain || 0), elong: (p.elong || 0),
   }));
   const origin = { t: tail[0] ? tail[0].t : 0, load: 0, disp: 0, stress: 0, strain: 0, elong: 0 };
-  const corrected = [origin, ...tail];
+  const corrected = [origin, ...tail.filter(p => p.disp >= 0)];
   let pmax = 0, smax = 0, idxPmax = 0;
   corrected.forEach((p, i) => { if (p.load > pmax) { pmax = p.load; idxPmax = i; } if (p.stress > smax) smax = p.stress; });
   return { ...parsed, points: corrected, pmax, smax, idxPmax, nPoints: corrected.length, _x0: x0, _i1: i1 };
@@ -466,6 +466,7 @@ window.FIRSTPEAK_EXCLUDE_28D = new Set([1,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18
 // acumulado sin reescalar. No sobreescribe: devuelve una nueva curva (o null si no aplica).
 window.applyFirstPeakCorrection = function(parsed, opts) {
   opts = opts || {};
+  if (parsed && parsed.preCorrected) return null;
   if (!parsed || !parsed.points || parsed.points.length < 2) return null;
   const pts = parsed.points;
   let pmax = 0; for (const p of pts) if (p.load > pmax) pmax = p.load;
@@ -507,25 +508,26 @@ window.applyFirstPeakCorrection = function(parsed, opts) {
   // Intersección: 1 + m1*(d - d1) = L025 + m2*(d - 0.25)
   const dStar = (L025 - m2 * 0.25 - 1 + m1 * d1) / (m1 - m2);
   const loadStar = 1 + m1 * (dStar - d1);
-  if (!isFinite(dStar)) return null;
+  if (!isFinite(dStar) || dStar <= 0) return null;
   if (!(loadStar > 2)) return null; // el primer peak siempre debe estar por sobre los 2 kN
 
   const DMAX = 1.25; // la corrección de desplazamiento solo aplica desde el primer peak hasta 1.25 mm
   const k = m2 / m1; // factor de escala del desplazamiento en ese tramo
+  if (!(k > 0) || !isFinite(k)) return null; // un factor ≤0 invertiría el eje de desplazamiento
   const dMaxCorr = dStar + (DMAX - dStar) * k; // desplazamiento corregido en 1.25 mm
   const corrected = pts.map(p => {
     if (p.disp <= dStar) return { ...p };
     if (p.disp <= DMAX) return { ...p, disp: dStar + (p.disp - dStar) * k };
     return { ...p, disp: dMaxCorr + (p.disp - DMAX) }; // más allá de 1.25 mm: sin reescalar, con el desfase acumulado
   });
-  const out = window.truncateAtMax({ ...parsed, points: corrected });
+  const out = window.truncateAtMax({ ...parsed, points: corrected.filter(p => p.disp >= 0) });
   return { ...out, firstPeakDisp: dStar, firstPeakLoad: loadStar, _m1: m1, _m2: m2, _k: k };
 };
 
 // Recorta una curva para que solo se muestre hasta 0.5 mm después de la carga máxima global
 // (o hasta el fin de los datos, lo que ocurra primero). Se aplica a TODAS las curvas en modo corregido.
 window.truncateAtMax = function(parsed) {
-  if (!parsed || !parsed.points || !parsed.points.length) return parsed;
+  if (!parsed || !parsed.points || !parsed.points.length || parsed.preCorrected) return parsed;
   const pts = parsed.points;
   let pmax = 0, csmax = 0, idxPmax = 0;
   pts.forEach((p, i) => { if (p.load > pmax) { pmax = p.load; idxPmax = i; } if ((p.stress || 0) > csmax) csmax = p.stress; });
@@ -541,6 +543,10 @@ function IndividualViewer({ specimen, testKey, onUpdate, onAddToCompare, T }) {
     return <div className="viewer-empty">{T.viewerEmpty || 'Sin datos cargados'}</div>;
   }
   const [mode, setMode] = React.useState('view'); // 'view' | 'setTrim' | 'setTrimEnd' | 'setPeak' | 'correct'
+  const MAX_FILTER_CURVES = 500;
+  const [filterStarted, setFilterStarted] = React.useState(false);
+  const filterOverflow = isFilterMode && filterSelected.length > MAX_FILTER_CURVES;
+  const selected = isFilterMode ? (filterStarted ? filterSelected.slice(0, MAX_FILTER_CURVES) : []) : manualSelected;
   const [unitMode, setUnitMode] = React.useState('kN');
   const [correctP1, setCorrectP1] = React.useState(null);
   const rawMode = mode === 'correct';
@@ -825,11 +831,112 @@ function ShrinkageViewer({ specimens, mix, T, user, mixData }) {
 }
 
 // ---------- Comparador ----------
-function ComparatorView({ state, T, lang }) {
+// Todas las curvas mecánicas disponibles (individuales + promedios por mezcla/ensayo/fase/edad).
+function buildAllCurveItems(state) {
+  const out = [];
+  for (const mixStr in state.results) {
+    const mix = parseInt(mixStr);
+    for (const test of ['flexion', 'compression']) {
+      const groups = new Map();
+      for (const s of (state.results[mixStr][test] || [])) {
+        if (!(s.parsed && s.parsed.pmax > 0)) continue;
+        const phase = window.phaseOf(mix, s);
+        out.push({ key: `${mix}_${test}_${s.id}`, kind: 'mech', mix, testKey: test, specimenId: s.id, age: s.age, phase });
+        const gk = phase + '|' + s.age;
+        if (!groups.has(gk)) groups.set(gk, []);
+        groups.get(gk).push(s.id);
+      }
+      for (const [gk, ids] of groups) {
+        if (ids.length < 2) continue;
+        const [phase, age] = [gk.split('|')[0], parseInt(gk.split('|')[1])];
+        out.push({ key: `${mix}_${test}_avg_${age}_${phase}`, kind: 'mechAvg', mix, testKey: test, specimenId: 'avg', age, phase, specimenIds: ids });
+      }
+    }
+  }
+  return out.sort((a, b) => a.mix - b.mix || a.testKey.localeCompare(b.testKey) || a.age - b.age || String(a.specimenId).localeCompare(String(b.specimenId)));
+}
+
+const FILTER_STORE_KEY = 'tesis_compare_filter_v1';
+const FILTER_FACTORS = ['BR', 'AMF', 'FVF', 'SFL', 'AFL', 'T'];
+
+// Barra de filtros "por exclusión": todo parte activo; se apagan chips para sacar curvas.
+function CompareFilterBar({ allItems, off, setOff, T }) {
+  const mixes = [...new Set(allItems.map(i => i.mix))].sort((a, b) => a - b);
+  const ages = [...new Set(allItems.map(i => i.age))].sort((a, b) => a - b);
+  const phases = ['p1', 'p2', 'valid'].filter(p => allItems.some(i => i.phase === p));
+  const groups = [
+    { id: 'phase', label: T.phaseLabel || 'Fase', opts: phases.map(p => ({ v: p, l: window.PHASE_NAME[p], c: window.PHASE_COLOR[p] })) },
+    { id: 'test', label: T.testLabel || 'Ensayo', opts: [{ v: 'flexion', l: T.flexion || 'Flexión' }, { v: 'compression', l: T.compression || 'Compresión' }] },
+    { id: 'age', label: T.ageLabel || 'Edad', opts: ages.map(a => ({ v: String(a), l: a + (T.day || 'd') })) },
+    { id: 'kind', label: T.aggLabel || 'Tipo', opts: [{ v: 'mech', l: T.aggInd || 'Individual' }, { v: 'mechAvg', l: T.aggAvgShort || 'Promedio' }] },
+    ...FILTER_FACTORS.map(f => ({ id: 'f_' + f, label: f, opts: [{ v: '-', l: '−' }, { v: '0', l: '0' }, { v: '+', l: '+' }] })),
+    { id: 'mix', label: T.mixes || 'Mezclas', wide: true, opts: mixes.map(m => ({ v: String(m), l: window.mixLabel(m) })) },
+  ];
+  const isOff = (g, v) => (off[g] || []).includes(v);
+  const toggle = (g, v) => setOff(o => { const cur = o[g] || []; return { ...o, [g]: cur.includes(v) ? cur.filter(x => x !== v) : [...cur, v] }; });
+  const setGroup = (g, vals) => setOff(o => ({ ...o, [g]: vals }));
+  const anyOff = Object.values(off).some(a => a && a.length);
+  return (
+    <div className="comp-controls cfb">
+      <div className="cfb-head">
+        <span className="vt-label">{T.filtersLabel || 'Filtros'} — {T.filtersHint || 'apaga lo que quieras sacar'}</span>
+        {anyOff && <button className="vt-btn" style={{fontSize: 10, padding: '2px 8px'}} onClick={() => setOff({})}>↺ {T.showAll || 'Mostrar todo'}</button>}
+      </div>
+      <div className="cfb-grid">
+        {groups.map(g => (
+          <div key={g.id} className={'cfb-group' + (g.wide ? ' wide' : '')}>
+            <span className="cfb-label">{g.label}</span>
+            <div className="enc-chips">
+              {g.opts.map(o => (
+                <button key={o.v} className={'enc-chip' + (isOff(g.id, o.v) ? '' : ' on')}
+                        style={o.c && !isOff(g.id, o.v) ? { background: o.c, borderColor: o.c, color: '#fff' } : undefined}
+                        onClick={() => toggle(g.id, o.v)}>{o.l}</button>
+              ))}
+              {g.opts.length > 3 && <>
+                <button className="cfb-mini" onClick={() => setGroup(g.id, [])}>{T.all || 'todas'}</button>
+                <button className="cfb-mini" onClick={() => setGroup(g.id, g.opts.map(o => o.v))}>{T.none || 'ninguna'}</button>
+              </>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ComparatorView({ state, T, lang, mode = 'manual' }) {
+  const isFilterMode = mode === 'filter';
+  const [filterOff, setFilterOff] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem(FILTER_STORE_KEY) || '{}').off || {}; } catch { return {}; }
+  });
+  const [excludedKeys, setExcludedKeys] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem(FILTER_STORE_KEY) || '{}').excluded || []; } catch { return []; }
+  });
+  React.useEffect(() => {
+    if (isFilterMode) localStorage.setItem(FILTER_STORE_KEY, JSON.stringify({ off: filterOff, excluded: excludedKeys }));
+  }, [isFilterMode, filterOff, excludedKeys]);
+  const allCurveItems = React.useMemo(() => isFilterMode ? buildAllCurveItems(state) : [], [isFilterMode, state]);
+  const filterSelected = React.useMemo(() => {
+    if (!isFilterMode) return [];
+    const design = {}; (window.FACTORIAL_DESIGN || []).forEach(d => { design[d.run] = d; });
+    const ex = new Set(excludedKeys);
+    const has = (g, v) => (filterOff[g] || []).includes(v);
+    return allCurveItems.filter(it => {
+      if (ex.has(it.key)) return false;
+      if (has('phase', it.phase) || has('test', it.testKey) || has('age', String(it.age)) || has('kind', it.kind) || has('mix', String(it.mix))) return false;
+      const d = design[it.mix];
+      if (d) for (const f of FILTER_FACTORS) if (d[f] != null && has('f_' + f, d[f])) return false;
+      return true;
+    });
+  }, [isFilterMode, allCurveItems, filterOff, excludedKeys]);
   // Lista de "selecciones" en localStorage temporal
-  const [selected, setSelected] = React.useState(() => {
+  const [manualSelected, setSelected] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem('tesis_compare_v1') || '[]'); } catch { return []; }
   });
+  const MAX_FILTER_CURVES = 500;
+  const [filterStarted, setFilterStarted] = React.useState(false);
+  const filterOverflow = isFilterMode && filterSelected.length > MAX_FILTER_CURVES;
+  const selected = isFilterMode ? (filterStarted ? filterSelected.slice(0, MAX_FILTER_CURVES) : []) : manualSelected;
   const [unitMode, setUnitMode] = React.useState('kN');
   const [shrinkUnit, setShrinkUnit] = React.useState('um');
   const [picker, setPicker] = React.useState(false);
@@ -858,10 +965,14 @@ function ComparatorView({ state, T, lang }) {
     return m;
   }, []);
   const toggleColorBy = (f) => setColorBy(arr => arr.includes(f) ? arr.filter(x => x !== f) : [...arr, f]);
-  const sigOf = (mix) => {
-    const d = designByRun[mix];
-    if (!d) return null;
-    return colorBy.map(f => `${f}${d[f]}`).join(' · ');
+  const sigOf = (s) => {
+    const d = designByRun[s.mix];
+    const parts = [];
+    for (const f of colorBy) {
+      if (f === 'PH') { const p = window.itemPhase(s); if (!p) return null; parts.push(window.PHASE_NAME[p]); }
+      else { if (!d) return null; parts.push(`${f}${d[f]}`); }
+    }
+    return parts.join(' · ');
   };
   // Mapa combinación-de-factores → color, en orden de aparición entre las curvas seleccionadas.
   // Por defecto: 1 solo factor → azul(−)/gris(0)/rojo(+); varios factores → paleta. Editable por el usuario.
@@ -870,12 +981,11 @@ function ComparatorView({ state, T, lang }) {
     if (!colorBy.length) return map;
     let idx = 0;
     selected.forEach(s => {
-      const d = designByRun[s.mix];
-      if (!d) return;
-      const sig = sigOf(s.mix);
+      const d = designByRun[s.mix] || {};
+      const sig = sigOf(s);
       if (sig == null || map.has(sig)) return;
       const def = colorBy.length === 1
-        ? (LEVEL_COLOR[d[colorBy[0]]] || PALETTE[idx % PALETTE.length])
+        ? ((colorBy[0] === 'PH' ? window.PHASE_COLOR[window.itemPhase(s)] : LEVEL_COLOR[d[colorBy[0]]]) || PALETTE[idx % PALETTE.length])
         : PALETTE[idx % PALETTE.length];
       map.set(sig, { sig, def, color: comboColors[sig] || def, idx });
       idx++;
@@ -890,15 +1000,16 @@ function ComparatorView({ state, T, lang }) {
   //   'corrected' -> processed + corrección automática de primer peak (solo flexión).
   const processMech = (spec, testKey, view, mix) => {
     if (view === true || view === 'pure') return spec.parsed;
+    const noNeg = (q) => (q && q.points && q.points.some(pt => pt.disp < 0)) ? { ...q, points: q.points.filter(pt => pt.disp >= 0) } : q;
     let p = spec.parsed;
     if (spec.correction) p = window.applyCorrection(p, spec.correction);
     if (spec.trimIdx || spec.trimEndIdx != null) p = window.applyTrim(p, spec.trimIdx, spec.trimEndIdx);
     if (view === 'corrected' && testKey === 'flexion') {
       const fp = window.applyFirstPeakCorrection(p, { mix: mix != null ? mix : spec.mix, age: spec.age });
-      if (fp) return fp;
-      return window.truncateAtMax(p); // aunque no aplique el primer peak, recortar a 0.5 mm tras la carga máxima
+      if (fp) return noNeg(fp);
+      return noNeg(window.truncateAtMax(p)); // aunque no aplique el primer peak, recortar a 0.5 mm tras la carga máxima
     }
-    return p;
+    return noNeg(p);
   };
   // Desplazamiento aplicado al inicio por la corrección/recorte (para alinear el boceto crudo).
   const mechShift = (spec, testKey) => {
@@ -913,8 +1024,8 @@ function ComparatorView({ state, T, lang }) {
   };
 
   React.useEffect(() => {
-    localStorage.setItem('tesis_compare_v1', JSON.stringify(selected));
-  }, [selected]);
+    localStorage.setItem('tesis_compare_v1', JSON.stringify(manualSelected));
+  }, [manualSelected]);
 
   const addMany = (items) => {
     setSelected(prev => {
@@ -950,6 +1061,7 @@ function ComparatorView({ state, T, lang }) {
   const addItem = (item) => addMany([item]);
 
   const removeItem = (key) => {
+    if (isFilterMode) { setExcludedKeys(k => k.includes(key) ? k : [...k, key]); return; }
     setSelected(s => s.filter(x => x.key !== key));
   };
 
@@ -1069,14 +1181,14 @@ function ComparatorView({ state, T, lang }) {
 
   // Codificación por factor del diseño: color (combinación de factores) y/o estilo de línea.
   if (colorBy.length || lineBy !== 'none') {
-    const mixByKey = {}; selected.forEach(s => { mixByKey[s.key] = s.mix; });
+    const itemByKey = {}; selected.forEach(s => { itemByKey[s.key] = s; });
     series = series.map(sr => {
-      const mix = mixByKey[sr.key];
-      const d = designByRun[mix];
-      if (!d) return sr;
+      const it = itemByKey[sr.key];
+      if (!it) return sr;
+      const d = designByRun[it.mix] || {};
       const next = { ...sr };
       if (colorBy.length) {
-        const info = colorCombos.get(sigOf(mix));
+        const info = colorCombos.get(sigOf(it));
         if (info) next.color = info.color;
       }
       if (lineBy !== 'none' && d[lineBy] != null) next.dash = LEVEL_DASH[d[lineBy]];
@@ -1095,7 +1207,7 @@ function ComparatorView({ state, T, lang }) {
       if (unitMode === 'MPa') pts = pts.map(p => { const mpa = window.computeStressMPa(p.load, s.testKey, spec); return { ...p, load: mpa != null ? mpa : 0 }; });
       let gColor = colorMap[s.key] || '#888';
       const gd = designByRun[s.mix];
-      if (colorBy.length) { const info = colorCombos.get(sigOf(s.mix)); if (info) gColor = info.color; }
+      if (colorBy.length) { const info = colorCombos.get(sigOf(s)); if (info) gColor = info.color; }
       else if (gd) gColor = colorMap[s.key] || '#888';
       ghostSeries.push({ points: pts, color: gColor, key: s.key + '_ghost', kind: 'ghost' });
     });
@@ -1159,10 +1271,35 @@ function ComparatorView({ state, T, lang }) {
     a.href = URL.createObjectURL(blob); a.download = 'comparacion.csv'; a.click();
   };
 
+  if (isFilterMode && !filterStarted) {
+    const n = filterSelected.length;
+    return (
+      <div className="comparator">
+        <div className="comp-header">
+          <h2>{T.filterComparator || 'Comparador por filtros'}</h2>
+        </div>
+        <div className="viewer-hint" style={{margin: '0 0 8px'}}>
+          {T.filterSetupHint || 'Elige qué curvas incluir antes de abrir el gráfico. Se muestran como máximo 100 curvas.'}
+        </div>
+        <CompareFilterBar allItems={allCurveItems} off={filterOff} setOff={setFilterOff} T={T} />
+        <div style={{display: 'flex', alignItems: 'center', gap: 12, marginTop: 12}}>
+          <button className="vt-btn primary" style={{fontSize: 14, padding: '8px 16px'}} disabled={n === 0}
+                  onClick={() => setFilterStarted(true)}>
+            {T.openChart || 'Abrir comparador'} ({Math.min(n, MAX_FILTER_CURVES)})
+          </button>
+          <span style={{fontSize: 12, color: n > MAX_FILTER_CURVES ? 'var(--danger, #b2182b)' : 'var(--text-3)'}}>
+            {n} {T.curvesMatch || 'curvas cumplen los filtros'}
+            {n > MAX_FILTER_CURVES && ` — ${T.onlyFirst || 'solo se mostrarán las primeras'} ${MAX_FILTER_CURVES}. ${T.refineFilters || 'Ajusta los filtros para elegir cuáles.'}`}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="comparator">
       <div className="comp-header">
-        <h2>{T.comparator || 'Comparador'}</h2>
+        <h2>{isFilterMode ? (T.filterComparator || 'Comparador por filtros') : (T.comparator || 'Comparador')}</h2>
         <div className="comp-actions">
           {hasShrink && !hasMech ? (
             <div className="unit-toggle">
@@ -1178,10 +1315,20 @@ function ComparatorView({ state, T, lang }) {
           <label style={{display:'none'}}>
             <input type="checkbox" />
           </label>
+          {isFilterMode && (
+            <button className="vt-btn" onClick={() => setFilterStarted(false)}>⚙ {T.editFilters || 'Filtros iniciales'}</button>
+          )}
+          {isFilterMode ? (excludedKeys.length > 0 && (
+            <button className="vt-btn" onClick={() => setExcludedKeys([])}
+                    title={T.restoreRemovedHint || 'Vuelve a mostrar las curvas quitadas con ✕'}>
+              ↺ {T.restoreRemoved || 'Restaurar quitadas'} ({excludedKeys.length})
+            </button>
+          )) : <>
           <button className="vt-btn" onClick={() => setPicker(true)} disabled={selected.length >= 100}>
             + {T.addCurve || 'Añadir curva'}
           </button>
-          <button className="vt-btn" onClick={() => setSelected([])} disabled={selected.length === 0}
+          </>}
+          <button className="vt-btn" style={isFilterMode ? {display: 'none'} : undefined} onClick={() => setSelected([])} disabled={selected.length === 0}
                   title={T.clearAllHint || 'Quita todas las curvas del comparador (no borra sus modificaciones)'}>
             🗑 {T.clearAll || 'Quitar todas'}
           </button>
@@ -1189,6 +1336,13 @@ function ComparatorView({ state, T, lang }) {
           <button className="vt-btn" onClick={exportCSV} disabled={!series.length}>CSV</button>
         </div>
       </div>
+
+      {isFilterMode && <CompareFilterBar allItems={allCurveItems} off={filterOff} setOff={setFilterOff} T={T} />}
+      {filterOverflow && (
+        <div className="viewer-hint" style={{margin: '0 0 8px', color: 'var(--danger, #b2182b)'}}>
+          {filterSelected.length} {T.curvesMatch || 'curvas cumplen los filtros'} — {T.onlyFirst || 'solo se muestran las primeras'} {MAX_FILTER_CURVES}. {T.refineFilters || 'Ajusta los filtros para elegir cuáles.'}
+        </div>
+      )}
 
       {(!hasShrink || hasMech) && (
         <div className="comp-controls">
@@ -1244,6 +1398,8 @@ function ComparatorView({ state, T, lang }) {
                 <button key={f} className={'enc-chip' + (colorBy.includes(f) ? ' on' : '')}
                         onClick={() => toggleColorBy(f)}>{f}</button>
               ))}
+              <button className={'enc-chip' + (colorBy.includes('PH') ? ' on' : '')}
+                      onClick={() => toggleColorBy('PH')}>{T.phaseLabel || 'Fase'}</button>
             </div>
             <label className="enc-sel">{T.lineByLabel || 'Línea'}
               <select value={lineBy} onChange={(e) => setLineBy(e.target.value)}>
@@ -1313,7 +1469,7 @@ function ComparatorView({ state, T, lang }) {
             <span>{T.curves || 'Curvas'} ({series.length}/{selected.length})</span>
             <button className="vt-btn" style={{fontSize:10, padding:'1px 6px'}} onClick={() => setShowCurveList(false)}>▶</button>
           </div>
-          {selected.length === 0 && <div className="hint-empty">{T.compareEmpty || 'Añade curvas para comparar.'}</div>}
+          {selected.length === 0 && <div className="hint-empty">{isFilterMode ? (T.filterEmpty || 'Ninguna curva cumple los filtros.') : (T.compareEmpty || 'Añade curvas para comparar.')}</div>}
           {selected.map((s, i) => {
             const color = colorMap[s.key] || PALETTE[i % PALETTE.length];
             const visible = visibleMap[s.key] !== false;

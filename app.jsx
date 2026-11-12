@@ -347,7 +347,7 @@ function MechSpecimenCard({ specimen, onUpdate, onOpenViewer, T }) {
         <span className="age-pill">{specimen.age} {specimen.age === 1 ? T.day : T.days}</span>
       </div>
 
-      {!specimen.file ? (
+      {!(specimen.file || hasData) ? (
         <label
           className={'drop-zone' + (drag ? ' dragover' : '')}
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
@@ -362,7 +362,7 @@ function MechSpecimenCard({ specimen, onUpdate, onOpenViewer, T }) {
       ) : (
         <>
           <div className="file-info">
-            <span className="fname" title={specimen.file.name}>{specimen.file.name}</span>
+            <span className="fname" title={specimen.file?.name || specimen.parsed?.meta?.source || ''}>{specimen.file?.name || specimen.parsed?.meta?.source || 'Curva cargada'}</span>
             <button onClick={removeFile} title={T.delete}>✕</button>
           </div>
           {specimen.parsed && (
@@ -370,7 +370,7 @@ function MechSpecimenCard({ specimen, onUpdate, onOpenViewer, T }) {
               <MiniCurve points={specimen.parsed.points} pmax={specimen.parsed.pmax} idxPmax={specimen.parsed.idxPmax} />
               <div className="metrics-row">
                 <div className="metric"><span className="k">{T.pmax}</span><span className="v big">{specimen.parsed.pmax.toFixed(2)}</span></div>
-                <div className="metric"><span className="k">{T.smax}</span><span className="v big">{specimen.parsed.smax.toFixed(1)}</span></div>
+                <div className="metric"><span className="k">{T.smax}</span><span className="v big">{specimen.parsed.smax ? specimen.parsed.smax.toFixed(1) : '—'}</span></div>
                 <div className="metric"><span className="k">{T.points}</span><span className="v">{specimen.parsed.nPoints}</span></div>
               </div>
               {onOpenViewer && (
@@ -758,7 +758,7 @@ function App() {
   const [lang, setLang] = useState(() => localStorage.getItem(LANG_KEY) || 'es');
   const [expanded, setExpanded] = useState(null);
   const [tab, setTab] = useState('mixes');
-  const [showComparator, setShowComparator] = useState(false);
+  const [showComparator, setShowComparator] = useState(false); // false | 'manual' | 'filter'
   const [viewerMix, setViewerMix] = useState(null);
   const [viewerSpec, setViewerSpec] = useState(null);
   const [dirty, setDirty] = useState(new Set());
@@ -869,6 +869,95 @@ function App() {
             localStorage.setItem(flagKey, '1');
           }
         }
+        // Subida directa de curvas Fase 2 a la nube (lee la nube, fusiona, guarda y verifica)
+        if (user.id === 'rodrigo' && window.PHASE2_UPLOAD && window.uploadPhase2 && remote && !localStorage.getItem('tesis_phase2_upload_v3')) {
+          setSaving(true);
+          try {
+            const { results: up, report } = await window.uploadPhase2(user, remote);
+            const cur = base || stateRef.current;
+            const updated = { ...cur, results: { ...cur.results, ...up } };
+            setState(updated);
+            stateRef.current = updated;
+            window.__phase2Report = report;
+            console.log('[phase2 upload]', report);
+            if (!report.failed.length && !report.mismatch.length) localStorage.setItem('tesis_phase2_upload_v3', '1');
+            else alert('Subida Fase 2: fallaron ' + report.failed.length + ' mezclas y ' + report.mismatch.length + ' probetas no coinciden. Recarga para reintentar.');
+          } finally { setSaving(false); }
+        }
+        // Pesos Fase 2 (+ dimensiones N45) sobre probetas ya existentes; la marca se guarda solo si se aplicaron todas
+        if (user.id === 'rodrigo' && window.PHASE2_WEIGHTS && !localStorage.getItem('tesis_phase2_weights_v1')) {
+          const cur = stateRef.current;
+          const nextResults = { ...cur.results };
+          const changed = new Set(), missing = [];
+          for (const mixStr in window.PHASE2_WEIGHTS) {
+            const mix = parseInt(mixStr);
+            const md = nextResults[mix] ? JSON.parse(JSON.stringify(nextResults[mix])) : null;
+            for (const test in window.PHASE2_WEIGHTS[mixStr]) {
+              for (const id in window.PHASE2_WEIGHTS[mixStr][test]) {
+                const w = window.PHASE2_WEIGHTS[mixStr][test][id];
+                const spec = md && (md[test] || []).find(s => s.id === id);
+                if (!spec) { missing.push(`${mix}/${test}/${id}`); continue; }
+                if (spec.weight !== w.w || (w.L && spec.length !== w.L)) {
+                  spec.weight = w.w; if (w.L) spec.length = w.L; if (w.H) spec.height = w.H; if (w.W) spec.width = w.W;
+                  changed.add(mix);
+                }
+              }
+            }
+            if (md && changed.has(mix)) nextResults[mix] = md;
+          }
+          if (changed.size) {
+            const updated = { ...cur, results: nextResults };
+            setState(updated); stateRef.current = updated;
+            setDirty(prev => { const n = new Set(prev); changed.forEach(m => n.add(m)); return n; });
+          }
+          window.__phase2WeightsMissing = missing;
+          console.log('[phase2 weights] aplicados en', changed.size, 'mezclas; faltan', missing.length);
+          if (!missing.length) localStorage.setItem('tesis_phase2_weights_v1', '1');
+        }
+        // Pesos y dimensiones completos (F1, F2, Validación) emparejados por ID; crea probetas que falten según el layout
+        const dimsFlag = 'tesis_all_dims_' + (window.ALL_DIMS_VERSION || 'v1');
+        if (user.id === 'rodrigo' && window.ALL_DIMS && !localStorage.getItem(dimsFlag)) {
+          const cur = stateRef.current;
+          const nextResults = { ...cur.results };
+          const changed = new Set(), created = [], missingMix = [];
+          const layout = (mix, test) => {
+            if (mix > 45) return window.validSpecs(mix);
+            const p1 = mix === 45 ? (test === 'flexion' ? window.M45_FLEXION_SPECIMENS : window.M45_COMPRESSION_SPECIMENS) : (test === 'flexion' ? window.FLEXION_SPECIMENS : window.COMPRESSION_SPECIMENS);
+            const p2 = mix === 45 ? (test === 'flexion' ? window.M45_PHASE2_FLEXION_SPECIMENS : window.M45_PHASE2_COMPRESSION_SPECIMENS) : (test === 'flexion' ? window.PHASE2_FLEXION_SPECIMENS : window.PHASE2_COMPRESSION_SPECIMENS);
+            return [...(p1 || []), ...(p2 || [])];
+          };
+          for (const mixStr in window.ALL_DIMS) {
+            const mix = parseInt(mixStr);
+            if (!nextResults[mix]) { missingMix.push(mix); continue; }
+            const md = JSON.parse(JSON.stringify(nextResults[mix]));
+            for (const test in window.ALL_DIMS[mixStr]) {
+              md[test] = md[test] || [];
+              for (const id in window.ALL_DIMS[mixStr][test]) {
+                const d = window.ALL_DIMS[mixStr][test][id];
+                let spec = md[test].find(s => s.id === id);
+                if (!spec) {
+                  const tpl = layout(mix, test).find(s => s.id === id);
+                  if (!tpl) { created.push(`${mix}/${test}/${id} (sin layout)`); continue; }
+                  spec = { ...tpl, file: null, parsed: null, length: '', height: '', width: '', weight: '', testDate: '', notes: '' };
+                  md[test].push(spec); created.push(`${mix}/${test}/${id}`);
+                }
+                if (spec.length !== d.length || spec.height !== d.height || spec.width !== d.width || spec.weight !== d.weight) {
+                  spec.length = d.length; spec.height = d.height; spec.width = d.width; spec.weight = d.weight;
+                  changed.add(mix);
+                }
+              }
+            }
+            if (changed.has(mix)) nextResults[mix] = md;
+          }
+          if (changed.size) {
+            const updated = { ...cur, results: nextResults };
+            setState(updated); stateRef.current = updated;
+            setDirty(prev => { const n = new Set(prev); changed.forEach(m => n.add(m)); return n; });
+          }
+          window.__allDimsReport = { changed: [...changed], created, missingMix };
+          console.log('[all dims] actualizadas', changed.size, 'mezclas; creadas', created.length, 'probetas; mezclas ausentes', missingMix);
+          if (!missingMix.length) localStorage.setItem(dimsFlag, '1');
+        }
       } catch (e) {
         console.error('[FB] load error', e);
       }
@@ -939,7 +1028,11 @@ function App() {
   // todas las mezclas. No toca las que ya tienen una corrección (manual o previa).
   const [bulkCorrecting, setBulkCorrecting] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showCurvesZip, setShowCurvesZip] = useState(false);
+  const [zipOpts, setZipOpts] = useState({ orig: true, corr: true, phases: ['p1', 'p2', 'valid'], tests: ['flexion', 'compression'] });
+  const [zipBusy, setZipBusy] = useState(false);
   const [exportFields, setExportFields] = useState(() => ({ ...window.EXPORT_FIELDS_DEFAULT }));
+  const [exportOpts, setExportOpts] = useState({ includeMixInfo: true, includeValidation: true });
   const bulkAutoCorrectFlexion = () => {
     if (!user || bulkCorrecting) return;
     if (!confirm(T.bulkCorrectConfirm || 'Aplicar corrección automática a TODAS las probetas de flexión que aún no tengan corrección? (Requiere haber llegado a 1 kN)')) return;
@@ -1048,6 +1141,10 @@ function App() {
               title={T.exportExcelTitle || 'Descarga un Excel eligiendo qué variables incluir'}>
               ⬇ {T.exportExcel || 'Exportar'}
             </button>
+            <button className="save-btn" onClick={() => setShowCurvesZip(true)}
+              title={T.exportCurvesTitle || 'Descarga un .zip con los .txt de todas las curvas (originales y/o corregidas)'}>
+              🗂 {T.exportCurves || 'Curvas .zip'}
+            </button>
           </div>
           <div className="lang-picker">
             {['es', 'en'].map(l => (
@@ -1057,6 +1154,46 @@ function App() {
         </div>
       </header>
 
+      {showCurvesZip && (
+        <div className="cal-modal-backdrop" onClick={() => !zipBusy && setShowCurvesZip(false)}>
+          <div className="cal-modal" style={{maxWidth: 420, width: '92%'}} onClick={(e) => e.stopPropagation()}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10}}>
+              <h2 style={{margin: 0, fontSize: 16, fontWeight: 600}}>{T.exportCurvesModal || 'Descargar curvas (.zip)'}</h2>
+              <button className="cal-close" onClick={() => setShowCurvesZip(false)}>✕</button>
+            </div>
+            <div style={{fontSize: 12, color: 'var(--text-3)', marginBottom: 12}}>
+              Carpetas: Originales | Corregidas / Fase / Ensayo / Mezcla. Incluye indice.csv y LEEME.txt.
+            </div>
+            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, fontSize: 13}}>
+              <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
+                <b style={{fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase'}}>Curvas</b>
+                <label className="vt-check"><input type="checkbox" checked={zipOpts.orig} onChange={(e) => setZipOpts(o => ({ ...o, orig: e.target.checked }))} /> Originales</label>
+                <label className="vt-check"><input type="checkbox" checked={zipOpts.corr} onChange={(e) => setZipOpts(o => ({ ...o, corr: e.target.checked }))} /> Corregidas</label>
+                <b style={{fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', marginTop: 6}}>Ensayo</b>
+                <label className="vt-check"><input type="checkbox" checked={zipOpts.tests.includes('flexion')} onChange={() => setZipOpts(o => ({ ...o, tests: o.tests.includes('flexion') ? o.tests.filter(x => x !== 'flexion') : [...o.tests, 'flexion'] }))} /> Flexión</label>
+                <label className="vt-check"><input type="checkbox" checked={zipOpts.tests.includes('compression')} onChange={() => setZipOpts(o => ({ ...o, tests: o.tests.includes('compression') ? o.tests.filter(x => x !== 'compression') : [...o.tests, 'compression'] }))} /> Compresión</label>
+              </div>
+              <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
+                <b style={{fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase'}}>Fase</b>
+                <label className="vt-check"><input type="checkbox" checked={zipOpts.phases.includes('p1')} onChange={() => setZipOpts(o => ({ ...o, phases: o.phases.includes('p1') ? o.phases.filter(x => x !== 'p1') : [...o.phases, 'p1'] }))} /> Fase 1</label>
+                <label className="vt-check"><input type="checkbox" checked={zipOpts.phases.includes('p2')} onChange={() => setZipOpts(o => ({ ...o, phases: o.phases.includes('p2') ? o.phases.filter(x => x !== 'p2') : [...o.phases, 'p2'] }))} /> Fase 2</label>
+                <label className="vt-check"><input type="checkbox" checked={zipOpts.phases.includes('valid')} onChange={() => setZipOpts(o => ({ ...o, phases: o.phases.includes('valid') ? o.phases.filter(x => x !== 'valid') : [...o.phases, 'valid'] }))} /> Validación</label>
+              </div>
+            </div>
+            <div style={{display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14}}>
+              <button className="vt-btn" disabled={zipBusy} onClick={() => setShowCurvesZip(false)}>{T.cancel || 'Cancelar'}</button>
+              <button className="vt-btn primary" disabled={zipBusy || (!zipOpts.orig && !zipOpts.corr) || !zipOpts.phases.length || !zipOpts.tests.length}
+                onClick={async () => {
+                  setZipBusy(true);
+                  try { await window.exportCurvesZip(state, user, zipOpts); setShowCurvesZip(false); }
+                  catch (e) { console.error(e); alert('Error al exportar: ' + (e.message || e)); }
+                  setZipBusy(false);
+                }}>{zipBusy ? '⟳ Generando…' : '⬇ Descargar .zip'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showExportModal && (
         <div className="cal-modal-backdrop" onClick={() => setShowExportModal(false)}>
           <div className="cal-modal" style={{maxWidth: 480, width: '92%'}} onClick={(e) => e.stopPropagation()}>
@@ -1065,7 +1202,19 @@ function App() {
               <button className="cal-close" onClick={() => setShowExportModal(false)}>✕</button>
             </div>
             <div style={{fontSize: 12, color: 'var(--text-3)', marginBottom: 12}}>
-              {T.exportModalHint || 'Se exportan 2 hojas (Compresión y Flexión), una fila por mezcla (N45 en 3 réplicas), con las variables marcadas para cada probeta/edad.'}
+              {T.exportModalHint || 'Hojas Compresión, Flexión y Ambos (N1–N45, N45 en 3 réplicas, edades 1/7/28 d). Las mezclas de validación van en una hoja aparte con su edad real.'}
+            </div>
+            <div style={{display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid var(--border)'}}>
+              <label className="vt-check" style={{fontSize: 13}}>
+                <input type="checkbox" checked={exportOpts.includeMixInfo} onChange={(e) => setExportOpts(o => ({ ...o, includeMixInfo: e.target.checked }))} />
+                Incluir información de cada mezcla (factores y características)
+              </label>
+              {user.mixCount > 45 && (
+                <label className="vt-check" style={{fontSize: 13}}>
+                  <input type="checkbox" checked={exportOpts.includeValidation} onChange={(e) => setExportOpts(o => ({ ...o, includeValidation: e.target.checked }))} />
+                  Incluir hoja de Validación (P1–P14, con su edad de ensayo)
+                </label>
+              )}
             </div>
             <div style={{display: 'flex', gap: 8, marginBottom: 12}}>
               <button className="vt-btn" onClick={() => setExportFields({ ...window.EXPORT_FIELDS_DEFAULT })}>
@@ -1088,7 +1237,7 @@ function App() {
             <div style={{display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14}}>
               <button className="vt-btn" onClick={() => setShowExportModal(false)}>{T.cancel || 'Cancelar'}</button>
               <button className="vt-btn primary" onClick={() => {
-                try { window.exportMixesExcel(state, user, T, exportFields); setShowExportModal(false); }
+                try { window.exportMixesExcel(state, user, T, exportFields, exportOpts); setShowExportModal(false); }
                 catch (e) { console.error(e); alert('Error al exportar: ' + (e.message || e)); }
               }}>⬇ {T.exportExcel || 'Exportar'}</button>
             </div>
@@ -1108,6 +1257,9 @@ function App() {
         </button>
         <button className={tab === 'analysis' ? 'active' : ''} onClick={() => setTab('analysis')}>
           {T.analysisTab || 'Análisis'}
+        </button>
+        <button className={tab === 'formula' ? 'active' : ''} onClick={() => setTab('formula')}>
+          {lang === 'en' ? 'Formula chart' : 'Gráfico por fórmula'}
         </button>
       </nav>
 
@@ -1231,8 +1383,12 @@ function App() {
 
           <div style={{marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 20, display: 'flex', alignItems: 'center', gap: 12}}>
             <button className="vt-btn primary" style={{fontSize: 14, padding: '10px 18px'}}
-              onClick={() => setShowComparator(true)}>
+              onClick={() => setShowComparator('manual')}>
               📊 {T.openComparator || 'Abrir comparador de curvas'}
+            </button>
+            <button className="vt-btn primary" style={{fontSize: 14, padding: '10px 18px'}}
+              onClick={() => setShowComparator('filter')}>
+              ⧩ {T.openFilterComparator || 'Comparador por filtros'}
             </button>
             <span style={{fontSize: 12, color: 'var(--text-3)'}}>
               {T.comparatorHint || 'Superpone y compara varias curvas en una ventana.'}
@@ -1246,7 +1402,7 @@ function App() {
                   <button className="cal-close" onClick={() => setShowComparator(false)}>✕</button>
                 </div>
                 <div style={{overflowY: 'auto', flex: 1}}>
-                  <window.ComparatorView state={state} T={T} lang={lang} />
+                  <window.ComparatorView key={showComparator} mode={showComparator} state={state} T={T} lang={lang} />
                 </div>
               </div>
             </div>
@@ -1268,6 +1424,9 @@ function App() {
           user={user}
           T={T} lang={lang}
         />
+      )}
+      {tab === 'formula' && window.FormulaChartTab && (
+        <window.FormulaChartTab state={state} user={user} T={T} lang={lang} />
       )}
     </div>
   );
